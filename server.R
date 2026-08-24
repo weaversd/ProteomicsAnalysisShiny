@@ -199,8 +199,12 @@ server <- function(input, output, session) {
     mar_cells_count <- 0
     mnar_cells_count <- 0
     
+    # server.R (Snippet inside observeEvent(input$btn_apply_norm))
+    
     if (input$impute_method == "Hybrid (MAR: KNN / MNAR: MinDet)") {
       global_mar <- MsCoreUtils::impute_matrix(norm_mat, method = "nbavg")
+      global_min <- min(norm_mat, na.rm = TRUE)
+      
       cond_lookup <- setNames(rv$sample_map$user_condition, rv$sample_map$new_ID)
       conds <- unname(cond_lookup[colnames(norm_mat)])
       
@@ -209,35 +213,30 @@ server <- function(input, output, session) {
       for (cond in unique(conds)) {
         cols <- which(conds == cond)
         n_reps <- length(cols)
-        
         sub_m <- norm_mat[, cols, drop = FALSE]
         present <- rowSums(!is.na(sub_m))
         mar_threshold <- ceiling(n_reps / 2)
         
         mar_proteins <- names(present[present >= mar_threshold & present < n_reps])
         if (length(mar_proteins) > 0) {
-          # Count exact missing cells for MAR
-          mar_cells_count <- mar_cells_count + sum(is.na(sub_m[mar_proteins, , drop = FALSE]))
           imputed_mat[mar_proteins, cols] <- global_mar[mar_proteins, cols]
         }
         
         mnar_proteins <- names(present[present < mar_threshold])
         if (length(mnar_proteins) > 0) {
-          # Count exact missing cells for MNAR
-          mnar_cells_count <- mnar_cells_count + sum(is.na(sub_m[mnar_proteins, , drop = FALSE]))
-          mnar_sub_mat <- sub_m[mnar_proteins, , drop = FALSE]
-          mnar_imputed_sub <- MsCoreUtils::impute_matrix(mnar_sub_mat, method = "MinDet")
-          imputed_mat[mnar_proteins, cols] <- mnar_imputed_sub
+          for (p in mnar_proteins) {
+            row_vals <- sub_m[p, ]
+            if (all(is.na(row_vals))) {
+              imputed_mat[p, cols] <- global_min - 0.5
+            } else {
+              min_val <- min(row_vals, na.rm = TRUE)
+              imputed_mat[p, cols] <- ifelse(is.na(row_vals), min_val - 0.5, row_vals)
+            }
+          }
         }
       }
       
       norm_mat <- imputed_mat
-      rv$impute_stats <- list(
-        method = input$impute_method,
-        total_na = total_nas,
-        mar = mar_cells_count,
-        mnar = mnar_cells_count
-      )
     } else if (input$impute_method != "None") {
       norm_mat <- MsCoreUtils::impute_matrix(norm_mat, method = input$impute_method)
       rv$impute_stats <- list(

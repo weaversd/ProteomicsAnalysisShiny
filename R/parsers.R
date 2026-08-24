@@ -47,20 +47,16 @@ parse_spectronaut <- function(path) {
 }
 
 
+# R/parsers.R (Snippet for parse_msfragger)
+
 parse_msfragger <- function(path) {
-  df <- read.delim(path, sep = "\t", check.names = FALSE)
+  df <- read.delim(path, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
   
-  # ----------------------------------------------------------------------------
-  # 1. Accession Column
-  # ----------------------------------------------------------------------------
   acc_col <- intersect(c("Protein.ID", "Protein", "Protein ID", "Accession"), names(df))[1]
   if (is.na(acc_col)) {
     stop("Could not find a valid Protein ID column in the uploaded MSFragger file.")
   }
   
-  # ----------------------------------------------------------------------------
-  # 2. Gene & Description Dictionary
-  # ----------------------------------------------------------------------------
   gene_col <- intersect(c("Gene", "PG.Genes", "Gene Name"), names(df))[1]
   desc_col <- intersect(c("Description", "PG.ProteinDescriptions"), names(df))[1]
   
@@ -77,33 +73,25 @@ parse_msfragger <- function(path) {
     ) %>%
     distinct(Accession, .keep_all = TRUE)
   
-  # ----------------------------------------------------------------------------
-  # 3. Target Standard Intensity Columns ONLY
-  # ----------------------------------------------------------------------------
-  # Regex explanation: Matches columns ending in '.Intensity' while excluding '.MaxLFQ.Intensity'
-  int_cols <- names(df)[which(grepl(" Intensity$", names(df)) & !grepl("MaxLFQ", names(df)))]
-  print(names(df))
+  # Regex accommodates either dot or space separators and explicitly excludes MaxLFQ
+  int_cols <- names(df)[which(grepl("[\\.\\s]Intensity$", names(df), ignore.case = TRUE) & !grepl("MaxLFQ", names(df), ignore.case = TRUE))]
   
-  # Fallback: If standard Intensity isn't present, check for MaxLFQ
   if (length(int_cols) == 0) {
-    int_cols <- names(df)[which(grepl(" MaxLFQ Intensity$", names(df)))]
+    int_cols <- names(df)[which(grepl("[\\.\\s]MaxLFQ[\\.\\s]Intensity$", names(df), ignore.case = TRUE))]
   }
   
   if (length(int_cols) == 0) {
     stop("No valid intensity columns found in MSFragger file.")
   }
   
-  # ----------------------------------------------------------------------------
-  # 4. Reshape & Clean Metadata
-  # ----------------------------------------------------------------------------
   df_proc <- df %>%
     mutate(Protein.ID = .data[[acc_col]]) %>%
     select(Protein.ID, all_of(int_cols)) %>%
     pivot_longer(cols = -Protein.ID, names_to = "ID", values_to = "Intensity") %>%
     mutate(
+      Intensity = as.numeric(Intensity),
       Intensity = ifelse(Intensity == 0, NA, Intensity),
-      # Clean '.Intensity' or '.MaxLFQ.Intensity' off sample IDs
-      ID        = str_remove(ID, "\\.(MaxLFQ\\.)?Intensity$"),
+      ID        = str_remove(ID, "[\\.\\s](MaxLFQ[\\.\\s])?Intensity$"),
       condition = str_remove_all(str_extract(ID, "x[0-9]+|[A-Za-z]+"), "x"),
       BR        = str_extract(ID, "\\d+$"),
       LogInt    = log2(Intensity)
