@@ -25,10 +25,10 @@ server <- function(input, output, session) {
       
       if (input$data_source == "Spectronaut") {
         parse_spectronaut(input$file_upload$datapath)
-        
       } else if (input$data_source == "MSFragger") {
         parse_msfragger(input$file_upload$datapath)
-        
+      } else if (input$data_source == "Generic Table (Long or Wide)") {
+        parse_generic(input$file_upload$datapath)
       } else if (input$data_source == "Re-import Exported RDS/State") {
         saved_state <- readRDS(input$file_upload$datapath)
         
