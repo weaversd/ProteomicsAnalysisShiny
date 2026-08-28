@@ -14,15 +14,18 @@ server <- function(input, output, session) {
     impute_stats = NULL
   )
   
+  # Helper to resolve flip sign input ID whether named 'flip_direction' or 'flip_sign'
+  is_flipped <- reactive({
+    isTRUE(input$flip_direction) || isTRUE(input$flip_sign)
+  })
+  
   # ----------------------------------------------------------------------------
   # 1. Parsing Input & Re-importing State
   # ----------------------------------------------------------------------------
   observeEvent(input$file_upload, {
     req(input$file_upload)
     
-    # Wrap parsing inside tryCatch for graceful error handling
     res <- tryCatch({
-      
       if (input$data_source == "Spectronaut") {
         parse_spectronaut(input$file_upload$datapath)
       } else if (input$data_source == "MSFragger") {
@@ -31,23 +34,18 @@ server <- function(input, output, session) {
         parse_generic(input$file_upload$datapath)
       } else if (input$data_source == "Re-import Exported RDS/State") {
         saved_state <- readRDS(input$file_upload$datapath)
-        
-        # Basic sanity check on imported state structure
         if (!all(c("raw_data", "geneDict") %in% names(saved_state))) {
           stop("Invalid state file structure.")
         }
-        
         rv$raw_data   <- saved_state$raw_data
         rv$geneDict   <- saved_state$geneDict
         rv$norm_data  <- saved_state$norm_data
         rv$de_results <- saved_state$de_results
         rv$audit_log  <- saved_state$audit_log
         rv$sample_map <- saved_state$sample_map
-        
         showNotification("Saved state successfully restored!", type = "message")
         return(NULL)
       }
-      
     }, error = function(e) {
       showNotification(
         ui = paste0("File formatted incorrectly or unsupported format selected: ", e$message),
@@ -57,14 +55,12 @@ server <- function(input, output, session) {
       return(NULL)
     })
     
-    # Exit early if an error occurred during parsing
     if (is.null(res)) return()
     
-    # Successfully parsed: Store data into reactive state
     rv$raw_data <- res$data
     rv$geneDict <- res$geneDict
     
-    # --- AUTO-INITIALIZE RAW QFEATURES OBJECT FOR QC PLOT ---
+    # Auto-initialize raw QFeatures container
     wide_data_init <- rv$raw_data %>%
       select(Protein.ID, ID, LogInt) %>%
       pivot_wider(names_from = ID, values_from = LogInt)
@@ -75,13 +71,11 @@ server <- function(input, output, session) {
       fnames = "Protein.ID", 
       name = "raw"
     )
-    # --------------------------------------------------------
-    # Initialize basic audit information
+    
     rv$audit_log$import_time <- Sys.time()
     rv$audit_log$source_type <- input$data_source
     rv$audit_log$file_name   <- input$file_upload$name
     
-    # Attach R and Package Versions
     if (exists("get_environment_audit")) {
       rv$audit_log$environment <- get_environment_audit()
     }
@@ -89,10 +83,9 @@ server <- function(input, output, session) {
     showNotification("File loaded successfully! Please verify sample metadata below.", type = "message")
   })
   
-  # Render Dynamic Mapping Controls for Each Detected Sample
+  # Dynamic Mapping Controls
   output$sample_mapping_ui <- renderUI({
     req(rv$raw_data)
-    
     unique_ids <- unique(rv$raw_data$ID)
     
     mapping_rows <- lapply(unique_ids, function(id) {
@@ -122,16 +115,13 @@ server <- function(input, output, session) {
   # Apply Sample Mapping Customizations
   observeEvent(input$btn_process_import, {
     req(rv$raw_data)
-    
     unique_ids <- unique(rv$raw_data$ID)
     
     mapping_df <- do.call(rbind, lapply(unique_ids, function(id) {
       cond_val <- input[[paste0("cond_", id)]]
       br_val   <- input[[paste0("br_", id)]]
-      
       if (is.null(cond_val) || cond_val == "") cond_val <- "Unspecified"
       if (is.null(br_val)   || br_val == "")   br_val   <- "1"
-      
       data.frame(
         ID = id,
         user_condition = cond_val,
@@ -154,7 +144,6 @@ server <- function(input, output, session) {
     rv$sample_map <- mapping_df
     rv$audit_log$sample_mapping <- mapping_df
     
-    # --- UPDATE QFEATURES OBJECT WITH NEW SAMPLE NAMES ---
     wide_data_mapped <- rv$raw_data %>%
       select(Protein.ID, ID, LogInt) %>%
       pivot_wider(names_from = ID, values_from = LogInt)
@@ -165,12 +154,10 @@ server <- function(input, output, session) {
       fnames = "Protein.ID", 
       name = "raw"
     )
-    # -----------------------------------------------------
     
     showNotification("Sample metadata successfully mapped!", type = "message")
   })
   
-  # Data Preview Table
   output$import_preview_table <- renderDT({
     req(rv$raw_data)
     datatable(head(rv$raw_data, 100), options = list(pageLength = 10, scrollX = TRUE))
@@ -199,12 +186,9 @@ server <- function(input, output, session) {
     mar_cells_count <- 0
     mnar_cells_count <- 0
     
-    # server.R (Snippet inside observeEvent(input$btn_apply_norm))
-    
     if (input$impute_method == "Hybrid (MAR: KNN / MNAR: MinDet)") {
       global_mar <- MsCoreUtils::impute_matrix(norm_mat, method = "nbavg")
       global_min <- min(norm_mat, na.rm = TRUE)
-      
       cond_lookup <- setNames(rv$sample_map$user_condition, rv$sample_map$new_ID)
       conds <- unname(cond_lookup[colnames(norm_mat)])
       
@@ -219,11 +203,13 @@ server <- function(input, output, session) {
         
         mar_proteins <- names(present[present >= mar_threshold & present < n_reps])
         if (length(mar_proteins) > 0) {
+          mar_cells_count <- mar_cells_count + sum(is.na(sub_m[mar_proteins, , drop = FALSE]))
           imputed_mat[mar_proteins, cols] <- global_mar[mar_proteins, cols]
         }
         
         mnar_proteins <- names(present[present < mar_threshold])
         if (length(mnar_proteins) > 0) {
+          mnar_cells_count <- mnar_cells_count + sum(is.na(sub_m[mnar_proteins, , drop = FALSE]))
           for (p in mnar_proteins) {
             row_vals <- sub_m[p, ]
             if (all(is.na(row_vals))) {
@@ -235,20 +221,14 @@ server <- function(input, output, session) {
           }
         }
       }
-      
       norm_mat <- imputed_mat
-    } else if (input$impute_method != "None") {
+      rv$impute_stats <- list(method = input$impute_method, total_na = total_nas, mar = mar_cells_count, mnar = mnar_cells_count)
+      
+    } else if (!input$impute_method %in% c("None", "No Imputation (Show 1-Condition Dropouts on Margins)")) {
       norm_mat <- MsCoreUtils::impute_matrix(norm_mat, method = input$impute_method)
-      rv$impute_stats <- list(
-        method = input$impute_method,
-        total_na = total_nas,
-        imputed_total = total_nas
-      )
+      rv$impute_stats <- list(method = input$impute_method, total_na = total_nas, imputed_total = total_nas)
     } else {
-      rv$impute_stats <- list(
-        method = "None",
-        total_na = total_nas
-      )
+      rv$impute_stats <- list(method = "None", total_na = total_nas)
     }
     
     rv$norm_data <- as.data.frame(norm_mat)
@@ -265,7 +245,6 @@ server <- function(input, output, session) {
     if (is.null(rv$impute_stats)) {
       return("Imputation has not been applied yet. Select options and click 'Apply Transformation'.")
     }
-    
     stats <- rv$impute_stats
     if (stats$method == "Hybrid (MAR: KNN / MNAR: MinDet)") {
       paste0(
@@ -277,20 +256,15 @@ server <- function(input, output, session) {
     } else if (stats$method == "None") {
       paste0("Method: None\nRemaining Missing Values: ", stats$total_na)
     } else {
-      paste0(
-        "Method: ", stats$method, "\n",
-        "Total Values Imputed: ", stats$total_na
-      )
+      paste0("Method: ", stats$method, "\nTotal Values Imputed: ", stats$total_na)
     }
   })
   
-  # Render QC Plot for Normalization
   output$norm_qc_plot <- renderPlot({
     req(rv$Qprot)
     plot_normalization_qc(rv$Qprot, i = 1)
   })
   
-  # Render Transformed Data Output Table
   output$transformed_data_table <- renderDT({
     req(rv$norm_data)
     datatable(rv$norm_data, options = list(pageLength = 10, scrollX = TRUE))
@@ -310,7 +284,6 @@ server <- function(input, output, session) {
     colnames(design) <- make.names(unique(groups))
     
     fit1 <- lmFit(data, design)
-    
     unique_groups <- colnames(design)
     if (length(unique_groups) < 2) return()
     
@@ -326,6 +299,7 @@ server <- function(input, output, session) {
       mutate(Condition = make.names(unname(cond_lookup[Sample])))
     
     results_list <- list()
+    
     for (comp in colnames(cm)) {
       dt <- topTable(fit2, coef = comp, number = Inf, adjust.method = "BH", confint = TRUE)
       dt$Accession <- rownames(dt)
@@ -337,20 +311,44 @@ server <- function(input, output, session) {
         filter(Condition %in% c(exp_cond, ref_cond)) %>%
         group_by(Accession) %>%
         summarise(
-          ExpQuant = mean(Quant[Condition == exp_cond], na.rm = TRUE),
-          RefQuant = mean(Quant[Condition == ref_cond], na.rm = TRUE),
-          .groups = "drop"
+          ExpQuant  = mean(Quant[Condition == exp_cond], na.rm = TRUE),
+          RefQuant  = mean(Quant[Condition == ref_cond], na.rm = TRUE),
+          Exp_Valid = sum(!is.na(Quant[Condition == exp_cond])),
+          Ref_Valid = sum(!is.na(Quant[Condition == ref_cond])),
+          .groups   = "drop"
         )
       
-      dt <- dt %>% 
-        left_join(scatter_means, by = "Accession") %>%
-        left_join(rv$geneDict, by = "Accession")
+      # 1. Join scatter means ONCE to the fitted limma table
+      dt <- dt %>% left_join(scatter_means, by = "Accession")
+      
+      # 2. Append 1-condition dropouts if requested
+      if (input$impute_method == "No Imputation (Show 1-Condition Dropouts on Margins)") {
+        dropout_rows <- scatter_means %>%
+          filter((Exp_Valid > 0 & Ref_Valid == 0) | (Exp_Valid == 0 & Ref_Valid > 0)) %>%
+          filter(!Accession %in% dt$Accession) %>%
+          mutate(
+            logFC     = ifelse(Exp_Valid > 0, Inf, -Inf),
+            AveExpr   = ifelse(Exp_Valid > 0, ExpQuant, RefQuant),
+            t         = NA_real_,
+            P.Value   = NA_real_,
+            adj.P.Val = NA_real_,
+            B         = NA_real_,
+            CI.L      = NA_real_,
+            CI.R      = NA_real_
+          )
+        
+        dt <- bind_rows(dt, dropout_rows)
+      }
+      
+      # 3. Cleanly attach gene dictionary metadata
+      dt <- dt %>% left_join(rv$geneDict, by = "Accession")
       
       attr(dt, "exp_cond") <- exp_cond
       attr(dt, "ref_cond") <- ref_cond
       
       results_list[[comp]] <- dt
     }
+    
     rv$de_results <- results_list
   }
   
@@ -368,65 +366,120 @@ server <- function(input, output, session) {
     
     exp_name <- attr(df, "exp_cond") %||% "Experimental"
     ref_name <- attr(df, "ref_cond") %||% "Reference"
-    comp_title <- input$selected_comparison
     
-    # Flip sign and condition labels if enabled
-    if (isTRUE(input$flip_direction)) {
-      df$logFC <- -df$logFC
-      if ("t" %in% names(df)) df$t <- -df$t
+    # 1. Sign Inversion Handling
+    if (is_flipped()) {
+      df <- df %>%
+        mutate(
+          logFC = -logFC,
+          temp_exp = ExpQuant,
+          ExpQuant = RefQuant,
+          RefQuant = temp_exp
+        ) %>%
+        select(-temp_exp)
       
-      tmp <- exp_name
-      exp_name <- ref_name
-      ref_name <- tmp
-      comp_title <- paste0(exp_name, "-", ref_name)
+      temp_name <- exp_name
+      exp_name  <- ref_name
+      ref_name  <- temp_name
     }
     
     raw_p_cutoff <- input$adj_p_cutoff
     log10_p_line <- -log10(raw_p_cutoff)
     
+    # 2. Assign Significance & Categories
     df <- df %>%
       mutate(
-        significant = abs(logFC) > input$fc_cutoff & adj.P.Val < raw_p_cutoff,
+        significant = !is.na(adj.P.Val) & is.finite(logFC) & abs(logFC) > input$fc_cutoff & adj.P.Val < raw_p_cutoff,
         Regulation = case_when(
+          is.infinite(logFC)       ~ "Dropout (1-Condition)",
           significant & logFC > 0  ~ "Upregulated",
           significant & logFC <= 0 ~ "Downregulated",
           TRUE                     ~ "Not Significant"
         ),
-        Regulation = factor(Regulation, levels = c("Upregulated", "Downregulated", "Not Significant"))
+        Regulation = factor(Regulation, levels = c("Upregulated", "Downregulated", "Dropout (1-Condition)", "Not Significant"))
       )
     
+    # --------------------------------------------------------------------------
+    # VOLCANO PLOT
+    # --------------------------------------------------------------------------
     if (input$plot_type == "Volcano") {
-      p <- ggplot(df, aes(x = logFC, y = -log10(adj.P.Val), text = paste("Gene:", gene, "<br>Accession:", Accession))) +
+      plot_df <- df %>% filter(is.finite(logFC) & !is.na(adj.P.Val))
+      
+      p <- ggplot(plot_df, aes(x = logFC, y = -log10(adj.P.Val), text = paste("Gene:", gene, "<br>Accession:", Accession))) +
         geom_point(aes(color = Regulation), size = input$point_size) +
         geom_hline(yintercept = log10_p_line, linetype = 2, color = "grey50") +
         geom_vline(xintercept = c(-input$fc_cutoff, input$fc_cutoff), linetype = 2, color = "grey50") +
         labs(
-          title = paste("Volcano Plot:", comp_title), 
+          title = paste("Volcano Plot:", input$selected_comparison), 
           x = paste0("Log2 Fold Change (", exp_name, " / ", ref_name, ")"), 
           y = "-Log10 Adjusted p-value"
         )
       
+      # --------------------------------------------------------------------------
+      # MA PLOT
+      # --------------------------------------------------------------------------
+      # --------------------------------------------------------------------------
+      # 2. MA PLOT (Plots Inf / -Inf on Visual Caps)
+      # --------------------------------------------------------------------------
     } else if (input$plot_type == "MA") {
-      p <- ggplot(df, aes(x = AveExpr, y = logFC, text = paste("Gene:", gene, "<br>Accession:", Accession))) +
+      # Calculate valid finite fold changes for dynamic y-cap
+      finite_fc <- df$logFC[!is.na(df$logFC) & is.finite(df$logFC)]
+      y_cap <- if (length(finite_fc) > 0) max(abs(finite_fc), na.rm = TRUE) + 2 else 6
+      
+      plot_df <- df %>%
+        mutate(
+          # 1. Ensure valid X-coordinate (AveExpr) uses whichever condition has data
+          has_exp = !is.na(ExpQuant) & is.finite(ExpQuant),
+          has_ref = !is.na(RefQuant) & is.finite(RefQuant),
+          
+          AveExpr = case_when(
+            has_exp & has_ref ~ ifelse(!is.na(AveExpr) & is.finite(AveExpr), AveExpr, (ExpQuant + RefQuant) / 2),
+            has_exp & !has_ref ~ ExpQuant,
+            !has_exp & has_ref ~ RefQuant,
+            TRUE ~ NA_real_
+          ),
+          
+          # 2. Robust placement on the caps for dropouts / infinite values
+          plot_logFC = case_when(
+            has_exp & !has_ref ~ y_cap,          # Present in Exp only -> Top cap
+            !has_exp & has_ref ~ -y_cap,         # Present in Ref only -> Bottom cap
+            is.infinite(logFC) & logFC > 0 ~ y_cap,
+            is.infinite(logFC) & logFC < 0 ~ -y_cap,
+            TRUE ~ logFC
+          )
+        ) %>%
+        filter(!is.na(AveExpr) & !is.na(plot_logFC))
+      
+      p <- ggplot(plot_df, aes(x = AveExpr, y = plot_logFC, text = paste("Gene:", gene, "<br>Accession:", Accession))) +
         geom_point(aes(color = Regulation), size = input$point_size) +
         geom_hline(yintercept = 0, color = "grey30") +
         geom_hline(yintercept = c(-input$fc_cutoff, input$fc_cutoff), linetype = 2, color = "grey50") +
+        geom_hline(yintercept = c(-y_cap, y_cap), linetype = 3, color = "grey70") +
+        coord_cartesian(ylim = c(-y_cap - 0.5, y_cap + 0.5)) +
         labs(
-          title = paste("MA Plot:", comp_title), 
-          x = "Log2 Average Expression", 
+          title = paste("MA Plot:", input$selected_comparison), 
+          x = "Log2 Average Expression (Valid Group Mean)", 
           y = paste0("Log2 Fold Change (", exp_name, " / ", ref_name, ")")
         )
       
+      # --------------------------------------------------------------------------
+      # SCATTER PLOT
+      # --------------------------------------------------------------------------
     } else if (input$plot_type == "Scatter") {
-      # Swap axes if flipped
-      x_val <- if (isTRUE(input$flip_direction)) "ExpQuant" else "RefQuant"
-      y_val <- if (isTRUE(input$flip_direction)) "RefQuant" else "ExpQuant"
+      all_quants <- c(df$RefQuant[is.finite(df$RefQuant)], df$ExpQuant[is.finite(df$ExpQuant)])
+      axis_floor <- if (length(all_quants) > 0) min(all_quants, na.rm = TRUE) - 1 else 0
       
-      p <- ggplot(df, aes(x = .data[[x_val]], y = .data[[y_val]], text = paste("Gene:", gene, "<br>Accession:", Accession))) +
+      plot_df <- df %>%
+        mutate(
+          plot_Ref = ifelse(is.na(RefQuant) | !is.finite(RefQuant), axis_floor, RefQuant),
+          plot_Exp = ifelse(is.na(ExpQuant) | !is.finite(ExpQuant), axis_floor, ExpQuant)
+        )
+      
+      p <- ggplot(plot_df, aes(x = plot_Ref, y = plot_Exp, text = paste("Gene:", gene, "<br>Accession:", Accession))) +
         geom_point(aes(color = Regulation), size = input$point_size) +
         geom_abline(intercept = 0, slope = 1, linetype = 2, color = "grey50") +
         labs(
-          title = paste("Scatter Plot:", comp_title), 
+          title = paste("Scatter Plot:", input$selected_comparison), 
           x = paste("Log2", ref_name, "Average Abundance"), 
           y = paste("Log2", exp_name, "Average Abundance")
         )
@@ -436,9 +489,10 @@ server <- function(input, output, session) {
       scale_color_manual(
         name = "Expression Status",
         values = c(
-          "Upregulated"     = input$col_up, 
-          "Downregulated"   = input$col_down, 
-          "Not Significant" = "grey70"
+          "Upregulated"           = input$col_up, 
+          "Downregulated"         = input$col_down, 
+          "Dropout (1-Condition)" = "grey40",
+          "Not Significant"       = "grey75"
         ),
         drop = FALSE
       ) +
@@ -451,7 +505,6 @@ server <- function(input, output, session) {
     p
   })
   
-  # Render Plotly Output
   output$plotly_view <- renderPlotly({
     req(base_ggplot())
     ggplotly(base_ggplot(), tooltip = "text") %>%
@@ -461,7 +514,6 @@ server <- function(input, output, session) {
       )
   })
   
-  # Single Unified Reactive Expression for Custom ggplot with Labels
   final_ggplot_object <- reactive({
     show_lbls   <- input$show_labels
     lbl_size    <- input$label_size
@@ -475,30 +527,55 @@ server <- function(input, output, session) {
     if (isTRUE(show_lbls)) {
       df <- rv$de_results[[input$selected_comparison]]
       
-      if (isTRUE(input$flip_direction)) {
-        df$logFC <- -df$logFC
+      if (is_flipped()) {
+        df <- df %>%
+          mutate(
+            logFC = -logFC,
+            temp_exp = ExpQuant,
+            ExpQuant = RefQuant,
+            RefQuant = temp_exp
+          ) %>%
+          select(-temp_exp)
       }
       
-      df$significant <- abs(df$logFC) > fc_cut & df$adj.P.Val < raw_p_cut
-      
+      df$significant <- !is.na(df$adj.P.Val) & is.finite(df$logFC) & abs(df$logFC) > fc_cut & df$adj.P.Val < raw_p_cut
       sig_df <- df %>% filter(significant & !is.na(gene) & gene != "")
       
       if (nrow(sig_df) > 0) {
-        p <- p + geom_label_repel(
-          data = sig_df,
-          aes(label = gene, group = paste0(gene, "_", max_ovrlaps)), 
-          size = lbl_size,
-          max.overlaps = max_ovrlaps,
-          show.legend = FALSE,
-          inherit.aes = TRUE
-        )
+        if (input$plot_type == "Volcano") {
+          p <- p + geom_label_repel(
+            data = sig_df,
+            aes(x = logFC, y = -log10(adj.P.Val), label = gene, group = paste0(gene, "_", max_ovrlaps)),
+            size = lbl_size,
+            max.overlaps = max_ovrlaps,
+            show.legend = FALSE,
+            inherit.aes = FALSE
+          )
+        } else if (input$plot_type == "MA") {
+          p <- p + geom_label_repel(
+            data = sig_df,
+            aes(x = AveExpr, y = logFC, label = gene, group = paste0(gene, "_", max_ovrlaps)),
+            size = lbl_size,
+            max.overlaps = max_ovrlaps,
+            show.legend = FALSE,
+            inherit.aes = FALSE
+          )
+        } else if (input$plot_type == "Scatter") {
+          p <- p + geom_label_repel(
+            data = sig_df,
+            aes(x = RefQuant, y = ExpQuant, label = gene, group = paste0(gene, "_", max_ovrlaps)),
+            size = lbl_size,
+            max.overlaps = max_ovrlaps,
+            show.legend = FALSE,
+            inherit.aes = FALSE
+          )
+        }
       }
     }
     
     return(p)
   })
   
-  # Render ggplot Output
   output$ggplot_view <- renderPlot({
     final_ggplot_object()
   })
@@ -582,7 +659,6 @@ server <- function(input, output, session) {
   output$experiment_summary_table <- renderDT({
     req(rv$raw_data)
     
-    # Calculate per condition metrics using unlogged Intensity
     summary_df <- rv$raw_data %>%
       group_by(condition) %>%
       summarise(
@@ -591,7 +667,6 @@ server <- function(input, output, session) {
         .groups = "drop"
       )
     
-    # Calculate %CV per protein per condition on raw intensity scale
     cv_per_cond <- rv$raw_data %>%
       filter(!is.na(Intensity) & Intensity > 0) %>%
       group_by(condition, Protein.ID) %>%
@@ -601,7 +676,7 @@ server <- function(input, output, session) {
         sd_int = sd(Intensity, na.rm = TRUE),
         .groups = "drop"
       ) %>%
-      filter(n_obs > 1) %>% # Need at least 2 replicates to compute CV
+      filter(n_obs > 1) %>%
       mutate(CV = (sd_int / mean_int) * 100) %>%
       group_by(condition) %>%
       summarise(
@@ -633,7 +708,7 @@ server <- function(input, output, session) {
       raw_file_name     <- input$file_upload$name %||% "raw_proteomics_data.tsv"
       norm_method_val   <- input$norm_method
       impute_method_val <- input$impute_method
-      flip_val          <- isTRUE(input$flip_direction)
+      flip_val          <- is_flipped()
       adj_p_cut         <- input$adj_p_cutoff
       fc_cut            <- input$fc_cutoff
       pt_size           <- input$point_size
@@ -645,10 +720,8 @@ server <- function(input, output, session) {
       col_down_val      <- input$col_down
       export_pfx        <- input$export_prefix
       
-      # Serialize the sample mapping metadata as an inline R expression
       mapping_dput <- paste(capture.output(dput(rv$sample_map)), collapse = "\n")
       
-      # Header & Libraries
       header_code <- glue::glue('
 # ==============================================================================
 # Automated Reproducible Proteomics Pipeline
@@ -657,11 +730,7 @@ server <- function(input, output, session) {
 # Execution Mode: {ifelse(mode_choice == "raw", "Raw Ingestion Pipeline", "State Ingestion Pipeline")}
 # ==============================================================================
 
-# 1. Load Required Packages
-required_pkgs <- c(
-  "dplyr", "tidyr", "ggplot2", "ggrepel", "limma", 
-  "QFeatures", "MsCoreUtils", "stringr", "readr"
-)
+required_pkgs <- c("dplyr", "tidyr", "ggplot2", "ggrepel", "limma", "QFeatures", "MsCoreUtils", "stringr", "readr")
 for (p in required_pkgs) {{
   if (!requireNamespace(p, quietly = TRUE)) install.packages(p)
   suppressPackageStartupMessages(library(p, character.only = TRUE))
@@ -670,33 +739,24 @@ for (p in required_pkgs) {{
 readQFeatures2 <- function(table, ecol, fnames = "Protein.ID", name = "raw_proteins") {{
   table_df <- as.data.frame(table)
   if (is.character(ecol)) ecol_idx <- match(ecol, colnames(table_df)) else ecol_idx <- ecol
-  
   feature_names <- make.unique(as.character(table_df[[fnames]]))
   assay_mat <- as.matrix(table_df[, ecol_idx, drop = FALSE])
   rownames(assay_mat) <- feature_names
-  
   row_data <- table_df[, -ecol_idx, drop = FALSE]
   rownames(row_data) <- feature_names
-  
-  se <- SummarizedExperiment(
-    assays = setNames(list(assay_mat), name),
-    rowData = row_data
-  )
+  se <- SummarizedExperiment(assays = setNames(list(assay_mat), name), rowData = row_data)
   QFeatures(setNames(list(se), name))
 }}
 ')
-  
-  # Ingestion Block Selection
-  if (mode_choice == "raw") {
-    ingestion_code <- glue::glue('
-# 2. Raw Ingestion & Parsers
-raw_file_path <- "{raw_file_name}" # Adjust file path if located in a different working directory
+      
+      if (mode_choice == "raw") {
+        ingestion_code <- glue::glue('
+raw_file_path <- "{raw_file_name}"
 
 parse_spectronaut <- function(path) {{
   df <- read.delim(path, sep = "\\t", check.names = FALSE)
   acc_col <- intersect(c("PG.ProteinAccessions", "Protein.ID", "ProteinAccessions"), names(df))[1]
   if (is.na(acc_col)) stop("Could not find a valid Protein Accession column in Spectronaut file.")
-  
   gene_col <- intersect(c("PG.Genes", "Gene", "Gene.Name", "PG.GeneNames"), names(df))[1]
   desc_col <- intersect(c("PG.ProteinDescriptions", "Description", "PG.ProteinDescriptions"), names(df))[1]
   
@@ -731,7 +791,6 @@ parse_msfragger <- function(path) {{
   df <- read.delim(path, sep = "\\t", check.names = FALSE)
   acc_col <- intersect(c("Protein.ID", "Protein", "Protein ID", "Accession"), names(df))[1]
   if (is.na(acc_col)) stop("Could not find a valid Protein ID column in MSFragger file.")
-  
   gene_col <- intersect(c("Gene", "PG.Genes", "Gene Name"), names(df))[1]
   desc_col <- intersect(c("Description", "PG.ProteinDescriptions"), names(df))[1]
   
@@ -770,44 +829,33 @@ parse_msfragger <- function(path) {{
   list(data = df_proc, geneDict = geneDict)
 }}
 
-# Parse source file
 parsed_res <- {ifelse(data_source_type == "Spectronaut", "parse_spectronaut(raw_file_path)", "parse_msfragger(raw_file_path)")}
 raw_data <- parsed_res$data
 geneDict <- parsed_res$geneDict
-
-# Apply metadata mapping configured in Dashboard
 sample_map <- {mapping_dput}
 
 raw_data <- raw_data %>%
   select(-any_of(c("condition", "BR"))) %>%
   left_join(sample_map, by = "ID") %>%
-  mutate(
-    condition = user_condition,
-    BR = user_BR,
-    ID = new_ID
-  ) %>%
+  mutate(condition = user_condition, BR = user_BR, ID = new_ID) %>%
   select(Protein.ID, ID, Intensity, condition, BR, LogInt)
 ')
-  } else {
-    ingestion_code <- glue::glue('
-# 2. Load State Objects from RDS
+      } else {
+        ingestion_code <- glue::glue('
 saved_state <- readRDS("{export_pfx}_state.rds")
 raw_data   <- saved_state$raw_data
 geneDict   <- saved_state$geneDict
 sample_map <- saved_state$sample_map
 ')
-  }
-  
-  # Downstream Analysis & Plotting
-  pipeline_code <- glue::glue('
-# 3. Normalization & Imputation
+      }
+      
+      pipeline_code <- glue::glue('
 wide_data <- raw_data %>%
   select(Protein.ID, ID, LogInt) %>%
   pivot_wider(names_from = ID, values_from = LogInt)
 
 qobj <- readQFeatures2(wide_data, ecol = 2:ncol(wide_data), fnames = "Protein.ID", name = "raw")
 
-# Normalization: {norm_method_val}
 if ("{norm_method_val}" != "none") {{
   qobj <- addAssay(qobj, normalize(qobj[["raw"]], method = "{norm_method_val}"), name = "norm")
 }} else {{
@@ -816,12 +864,10 @@ if ("{norm_method_val}" != "none") {{
 
 norm_mat <- assay(qobj[["norm"]])
 
-# Imputation: {impute_method_val}
 if ("{impute_method_val}" == "Hybrid (MAR: KNN / MNAR: MinDet)") {{
   global_mar <- MsCoreUtils::impute_matrix(norm_mat, method = "nbavg")
   cond_lookup <- setNames(sample_map$user_condition, sample_map$new_ID)
   conds <- unname(cond_lookup[colnames(norm_mat)])
-  
   imputed_mat <- norm_mat
   
   for (cond in unique(conds)) {{
@@ -838,29 +884,32 @@ if ("{impute_method_val}" == "Hybrid (MAR: KNN / MNAR: MinDet)") {{
     
     mnar_proteins <- names(present[present < mar_threshold])
     if (length(mnar_proteins) > 0) {{
-      mnar_sub_mat <- sub_m[mnar_proteins, , drop = FALSE]
-      mnar_imputed_sub <- MsCoreUtils::impute_matrix(mnar_sub_mat, method = "MinDet")
-      imputed_mat[mnar_proteins, cols] <- mnar_imputed_sub
+      for (p in mnar_proteins) {{
+        row_vals <- sub_m[p, ]
+        if (all(is.na(row_vals))) {{
+          imputed_mat[p, cols] <- min(norm_mat, na.rm = TRUE) - 0.5
+        }} else {{
+          min_val <- min(row_vals, na.rm = TRUE)
+          imputed_mat[p, cols] <- ifelse(is.na(row_vals), min_val - 0.5, row_vals)
+        }}
+      }}
     }}
   }}
   norm_mat <- imputed_mat
-}} else if ("{impute_method_val}" != "None") {{
+}} else if (!("{impute_method_val}" %in% c("None", "No Imputation (Show 1-Condition Dropouts on Margins)"))) {{
   norm_mat <- MsCoreUtils::impute_matrix(norm_mat, method = "{impute_method_val}")
 }}
 
 norm_data <- as.data.frame(norm_mat)
 
-# Export processed/normalized abundance matrix to TSV
 norm_export_df <- norm_data %>%
   tibble::rownames_to_column(var = "Protein.ID") %>%
   left_join(geneDict, by = c("Protein.ID" = "Accession"))
 
 readr::write_tsv(norm_export_df, file = "{export_pfx}_normalized_imputed_matrix.tsv")
 
-# 4. Differential Expression (limma)
 cond_lookup <- setNames(sample_map$user_condition, sample_map$new_ID)
 groups <- unname(cond_lookup[colnames(norm_data)])
-
 design <- model.matrix(~0 + factor(groups))
 colnames(design) <- make.names(unique(groups))
 
@@ -868,7 +917,6 @@ fit1 <- lmFit(norm_data, design)
 unique_groups <- colnames(design)
 combos <- combn(unique_groups, 2, simplify = FALSE)
 contrast_strings <- sapply(combos, function(x) paste0(x[1], "-", x[2]))
-
 cm <- makeContrasts(contrasts = contrast_strings, levels = design)
 fit2 <- eBayes(contrasts.fit(fit1, cm))
 
@@ -881,7 +929,6 @@ de_results <- list()
 for (comp in colnames(cm)) {{
   dt <- topTable(fit2, coef = comp, number = Inf, adjust.method = "BH", confint = TRUE)
   dt$Accession <- rownames(dt)
-  
   exp_cond <- str_trim(str_split(comp, "-")[[1]][1])
   ref_cond <- str_trim(str_split(comp, "-")[[1]][2])
   
@@ -889,22 +936,38 @@ for (comp in colnames(cm)) {{
     filter(Condition %in% c(exp_cond, ref_cond)) %>%
     group_by(Accession) %>%
     summarise(
-      ExpQuant = mean(Quant[Condition == exp_cond], na.rm = TRUE),
-      RefQuant = mean(Quant[Condition == ref_cond], na.rm = TRUE),
-      .groups = "drop"
+      ExpQuant  = mean(Quant[Condition == exp_cond], na.rm = TRUE),
+      RefQuant  = mean(Quant[Condition == ref_cond], na.rm = TRUE),
+      Exp_Valid = sum(!is.na(Quant[Condition == exp_cond])),
+      Ref_Valid = sum(!is.na(Quant[Condition == ref_cond])),
+      .groups   = "drop"
     )
   
-  dt <- dt %>% 
-    left_join(scatter_means, by = "Accession") %>%
-    left_join(geneDict, by = "Accession")
+  dt <- dt %>% left_join(scatter_means, by = "Accession")
   
+  if ("{impute_method_val}" == "No Imputation (Show 1-Condition Dropouts on Margins)") {{
+    dropout_rows <- scatter_means %>%
+      filter((Exp_Valid > 0 & Ref_Valid == 0) | (Exp_Valid == 0 & Ref_Valid > 0)) %>%
+      filter(!Accession %in% dt$Accession) %>%
+      mutate(
+        logFC     = ifelse(Exp_Valid > 0, Inf, -Inf),
+        AveExpr   = ifelse(Exp_Valid > 0, ExpQuant, RefQuant),
+        t         = NA_real_,
+        P.Value   = NA_real_,
+        adj.P.Val = NA_real_,
+        B         = NA_real_,
+        CI.L      = NA_real_,
+        CI.R      = NA_real_
+      )
+    dt <- bind_rows(dt, dropout_rows)
+  }}
+  
+  dt <- dt %>% left_join(geneDict, by = "Accession")
   attr(dt, "exp_cond") <- exp_cond
   attr(dt, "ref_cond") <- ref_cond
-  
   de_results[[comp]] <- dt
 }}
 
-# 5. Generate and Save All TSV Results and Plots (Volcano, MA, Scatter)
 flip_direction <- {flip_val}
 adj_p_cutoff <- {adj_p_cut}
 fc_cutoff <- {fc_cut}
@@ -917,36 +980,35 @@ for (comp_name in names(de_results)) {{
   curr_title <- comp_name
   
   if (flip_direction) {{
-    df$logFC <- -df$logFC
-    if ("t" %in% names(df)) df$t <- -df$t
+    df <- df %>%
+      mutate(logFC = -logFC, temp_exp = ExpQuant, ExpQuant = RefQuant, RefQuant = temp_exp) %>%
+      select(-temp_exp)
     tmp <- exp_name; exp_name <- ref_name; ref_name <- tmp
     curr_title <- paste0(exp_name, "-", ref_name)
   }}
   
   log10_p_line <- -log10(adj_p_cutoff)
-  
   df <- df %>%
     mutate(
-      significant = abs(logFC) > fc_cutoff & adj.P.Val < adj_p_cutoff,
+      significant = !is.na(adj.P.Val) & is.finite(logFC) & abs(logFC) > fc_cutoff & adj.P.Val < adj_p_cutoff,
       Regulation = case_when(
+        is.infinite(logFC)       ~ "Dropout (1-Condition)",
         significant & logFC > 0  ~ "Upregulated",
         significant & logFC <= 0 ~ "Downregulated",
         TRUE                     ~ "Not Significant"
       ),
-      Regulation = factor(Regulation, levels = c("Upregulated", "Downregulated", "Not Significant"))
+      Regulation = factor(Regulation, levels = c("Upregulated", "Downregulated", "Dropout (1-Condition)", "Not Significant"))
     )
   
-  # Export full statistics for this contrast to TSV
   readr::write_tsv(df, file = paste0("{export_pfx}_", comp_name, "_de_results.tsv"))
-  
   sig_df <- df %>% filter(significant & !is.na(gene) & gene != "")
   
-  # A. Volcano Plot
-  p_volcano <- ggplot(df, aes(x = logFC, y = -log10(adj.P.Val))) +
+  # Volcano
+  p_volcano <- ggplot(df %>% filter(is.finite(logFC) & !is.na(adj.P.Val)), aes(x = logFC, y = -log10(adj.P.Val))) +
     geom_point(aes(color = Regulation), size = {pt_size}) +
     geom_hline(yintercept = log10_p_line, linetype = 2, color = "grey50") +
     geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = 2, color = "grey50") +
-    scale_color_manual(values = c("Upregulated" = "{col_up_val}", "Downregulated" = "{col_down_val}", "Not Significant" = "grey70"), drop = FALSE) +
+    scale_color_manual(values = c("Upregulated" = "{col_up_val}", "Downregulated" = "{col_down_val}", "Dropout (1-Condition)" = "grey40", "Not Significant" = "grey75"), drop = FALSE) +
     theme_bw(base_size = {txt_size}) +
     theme(panel.grid = element_blank()) +
     labs(title = paste("Volcano Plot:", curr_title), x = paste0("Log2 Fold Change (", exp_name, " / ", ref_name, ")"), y = "-Log10 Adjusted p-value")
@@ -956,43 +1018,64 @@ for (comp_name in names(de_results)) {{
   }}
   ggsave(paste0("{export_pfx}_", comp_name, "_volcano.png"), plot = p_volcano, width = 8, height = 6, dpi = 300)
   
-  # B. MA Plot
-  p_ma <- ggplot(df, aes(x = AveExpr, y = logFC)) +
+  # MA
+  # MA
+  finite_fc <- df$logFC[is.finite(df$logFC)]
+  y_cap <- if (length(finite_fc) > 0) max(abs(finite_fc), na.rm = TRUE) + 2 else 6
+  plot_ma_df <- df %>%
+    mutate(
+      AveExpr = case_when(
+        !is.na(AveExpr) & is.finite(AveExpr) ~ AveExpr,
+        !is.na(ExpQuant) & is.finite(ExpQuant) ~ ExpQuant,
+        !is.na(RefQuant) & is.finite(RefQuant) ~ RefQuant,
+        TRUE ~ 0
+      ),
+      plot_logFC = case_when(logFC == Inf ~ y_cap, logFC == -Inf ~ -y_cap, TRUE ~ logFC)
+    ) %>%
+    filter(!is.na(AveExpr) & !is.na(plot_logFC))
+  
+  p_ma <- ggplot(plot_ma_df, aes(x = AveExpr, y = plot_logFC)) +
     geom_point(aes(color = Regulation), size = {pt_size}) +
     geom_hline(yintercept = 0, color = "grey30") +
     geom_hline(yintercept = c(-fc_cutoff, fc_cutoff), linetype = 2, color = "grey50") +
-    scale_color_manual(values = c("Upregulated" = "{col_up_val}", "Downregulated" = "{col_down_val}", "Not Significant" = "grey70"), drop = FALSE) +
+    geom_hline(yintercept = c(-y_cap, y_cap), linetype = 3, color = "grey70") +
+    coord_cartesian(ylim = c(-y_cap - 0.5, y_cap + 0.5)) +
+    scale_color_manual(values = c("Upregulated" = "{col_up_val}", "Downregulated" = "{col_down_val}", "Dropout (1-Condition)" = "grey40", "Not Significant" = "grey75"), drop = FALSE) +
     theme_bw(base_size = {txt_size}) +
     theme(panel.grid = element_blank()) +
     labs(title = paste("MA Plot:", curr_title), x = "Log2 Average Expression", y = paste0("Log2 Fold Change (", exp_name, " / ", ref_name, ")"))
-  
   if (show_labels && nrow(sig_df) > 0) {{
-    p_ma <- p_ma + geom_label_repel(data = sig_df, aes(label = gene), size = {lbl_size}, max.overlaps = {max_overlaps_val}, show.legend = FALSE)
+    p_ma <- p_ma + geom_label_repel(data = sig_df, aes(x = AveExpr, y = logFC, label = gene), size = {lbl_size}, max.overlaps = {max_overlaps_val}, show.legend = FALSE)
   }}
   ggsave(paste0("{export_pfx}_", comp_name, "_ma.png"), plot = p_ma, width = 8, height = 6, dpi = 300)
   
-  # C. Scatter Plot
-  x_col <- if (flip_direction) "ExpQuant" else "RefQuant"
-  y_col <- if (flip_direction) "RefQuant" else "ExpQuant"
+  # Scatter
+  all_quants <- c(df$RefQuant[is.finite(df$RefQuant)], df$ExpQuant[is.finite(df$ExpQuant)])
+  axis_floor <- if (length(all_quants) > 0) min(all_quants, na.rm = TRUE) - 1 else 0
+  plot_sc_df <- df %>%
+    mutate(
+      plot_Ref = ifelse(is.na(RefQuant) | !is.finite(RefQuant), axis_floor, RefQuant),
+      plot_Exp = ifelse(is.na(ExpQuant) | !is.finite(ExpQuant), axis_floor, ExpQuant)
+    )
   
-  p_scatter <- ggplot(df, aes(x = .data[[x_col]], y = .data[[y_col]])) +
+  p_scatter <- ggplot(plot_sc_df, aes(x = plot_Ref, y = plot_Exp)) +
     geom_point(aes(color = Regulation), size = {pt_size}) +
     geom_abline(intercept = 0, slope = 1, linetype = 2, color = "grey50") +
-    scale_color_manual(values = c("Upregulated" = "{col_up_val}", "Downregulated" = "{col_down_val}", "Not Significant" = "grey70"), drop = FALSE) +
+    scale_color_manual(values = c("Upregulated" = "{col_up_val}", "Downregulated" = "{col_down_val}", "Dropout (1-Condition)" = "grey40", "Not Significant" = "grey75"), drop = FALSE) +
     theme_bw(base_size = {txt_size}) +
     theme(panel.grid = element_blank()) +
     labs(title = paste("Scatter Plot:", curr_title), x = paste("Log2", ref_name, "Average Abundance"), y = paste("Log2", exp_name, "Average Abundance"))
   
   if (show_labels && nrow(sig_df) > 0) {{
-    p_scatter <- p_scatter + geom_label_repel(data = sig_df, aes(label = gene), size = {lbl_size}, max.overlaps = {max_overlaps_val}, show.legend = FALSE)
+    p_scatter <- p_scatter + geom_label_repel(data = sig_df, aes(x = RefQuant, y = ExpQuant, label = gene), size = {lbl_size}, max.overlaps = {max_overlaps_val}, show.legend = FALSE)
   }}
   ggsave(paste0("{export_pfx}_", comp_name, "_scatter.png"), plot = p_scatter, width = 8, height = 6, dpi = 300)
 }}
 
-cat("Pipeline completed successfully! Normalized matrix, DE result tables (.tsv), and plots (.png) have been exported.\\n")
+cat("Pipeline completed successfully!\n")
 ')
-  
-  writeLines(paste0(header_code, ingestion_code, pipeline_code), file)
+      
+      writeLines(paste0(header_code, ingestion_code, pipeline_code), file)
     }
   )
 }
