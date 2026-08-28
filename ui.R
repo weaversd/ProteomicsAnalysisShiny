@@ -31,8 +31,17 @@ ui <- page_navbar(
       sidebarPanel(
         selectInput("norm_method", "Normalization Method:",
                     choices = c("none", "center.median", "center.mean", "quantiles", "quantiles.robust")),
-        selectInput("impute_method", "Imputation Method:",
-                    choices = c("None", "Hybrid (MAR: KNN / MNAR: MinDet)", "knn", "MinDet", "MinProb", "zero")),
+        selectInput(
+          inputId = "impute_method",
+          label   = "Select Imputation Method:",
+          choices = c(
+            "Hybrid (MAR: KNN / MNAR: MinDet)",
+            "No Imputation (Show 1-Condition Dropouts on Margins)",
+            "MinDet",
+            "knn",
+            "nbavg",
+            "None"
+          ), selected = "None"),
         actionButton("btn_apply_norm", "Apply Transformation", class = "btn-success w-100")
       ),
       mainPanel(
