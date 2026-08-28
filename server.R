@@ -587,15 +587,69 @@ server <- function(input, output, session) {
     toJSON(rv$audit_log, pretty = TRUE)
   })
   
+  # server.R (Updated download_excel handler)
+  
+  # Excel Workbook Download Handler
   output$download_excel <- downloadHandler(
-    filename = function() { paste0(input$export_prefix, "_results.xlsx") },
+    filename = function() { 
+      paste0(input$export_prefix, "_results.xlsx") 
+    },
+    contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     content = function(file) {
-      wb <- createWorkbook()
+      wb <- openxlsx::createWorkbook()
+      flip <- is_flipped()
+      
       for (comp in names(rv$de_results)) {
-        addWorksheet(wb, comp)
-        writeData(wb, comp, rv$de_results[[comp]])
+        df <- rv$de_results[[comp]]
+        exp_name <- attr(df, "exp_cond") %||% "Experimental"
+        ref_name <- attr(df, "ref_cond") %||% "Reference"
+        
+        # 1. Handle Contrast Inversion (Sign & Columns)
+        if (flip) {
+          df <- df %>%
+            mutate(
+              logFC = -logFC,
+              temp_exp = ExpQuant,
+              ExpQuant = RefQuant,
+              RefQuant = temp_exp,
+              temp_v = Exp_Valid,
+              Exp_Valid = Ref_Valid,
+              Ref_Valid = temp_v
+            ) %>%
+            select(-any_of(c("temp_exp", "temp_v")))
+          
+          # Swap condition names and title
+          temp_n   <- exp_name
+          exp_name <- ref_name
+          ref_name <- temp_n
+          sheet_title <- paste0(exp_name, "-", ref_name)
+        } else {
+          sheet_title <- comp
+        }
+        
+        # Excel sheet name character restrictions
+        safe_sheet_title <- substr(gsub("[\\[\\]\\*\\?\\/\\\\]", "_", sheet_title), 1, 31)
+        
+        # 2. Base R renaming (bypasses the rlang `:=` operator requirement)
+        rename_map <- c(
+          "ExpQuant"  = paste0("Log2_", exp_name, "_Mean"),
+          "RefQuant"  = paste0("Log2_", ref_name, "_Mean"),
+          "Exp_Valid" = paste0(exp_name, "_Valid_Count"),
+          "Ref_Valid" = paste0(ref_name, "_Valid_Count")
+        )
+        
+        df_export <- df
+        for (orig_col in names(rename_map)) {
+          if (orig_col %in% names(df_export)) {
+            names(df_export)[names(df_export) == orig_col] <- rename_map[[orig_col]]
+          }
+        }
+        
+        openxlsx::addWorksheet(wb, safe_sheet_title)
+        openxlsx::writeData(wb, safe_sheet_title, df_export)
       }
-      saveWorkbook(wb, file, overwrite = TRUE)
+      
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
     }
   )
   
@@ -981,9 +1035,20 @@ for (comp_name in names(de_results)) {{
   
   if (flip_direction) {{
     df <- df %>%
-      mutate(logFC = -logFC, temp_exp = ExpQuant, ExpQuant = RefQuant, RefQuant = temp_exp) %>%
-      select(-temp_exp)
-    tmp <- exp_name; exp_name <- ref_name; ref_name <- tmp
+      mutate(
+        logFC = -logFC,
+        temp_exp = ExpQuant,
+        ExpQuant = RefQuant,
+        RefQuant = temp_exp,
+        temp_v = Exp_Valid,
+        Exp_Valid = Ref_Valid,
+        Ref_Valid = temp_v
+      ) %>%
+      select(-any_of(c("temp_exp", "temp_v")))
+    
+    tmp <- exp_name
+    exp_name <- ref_name
+    ref_name <- tmp
     curr_title <- paste0(exp_name, "-", ref_name)
   }}
   
@@ -1000,7 +1065,22 @@ for (comp_name in names(de_results)) {{
       Regulation = factor(Regulation, levels = c("Upregulated", "Downregulated", "Dropout (1-Condition)", "Not Significant"))
     )
   
-  readr::write_tsv(df, file = paste0("{export_pfx}_", comp_name, "_de_results.tsv"))
+  # === INSERT STEP 2 HERE ===
+  rename_map <- c(
+    "ExpQuant"  = paste0("Log2_", exp_name, "_Mean"),
+    "RefQuant"  = paste0("Log2_", ref_name, "_Mean"),
+    "Exp_Valid" = paste0(exp_name, "_Valid_Count"),
+    "Ref_Valid" = paste0(ref_name, "_Valid_Count")
+  )
+  
+  export_df <- df
+  for (orig_col in names(rename_map)) {{
+    if (orig_col %in% names(export_df)) {{
+      names(export_df)[names(export_df) == orig_col] <- rename_map[[orig_col]]
+    }}
+  }}
+  
+  readr::write_tsv(export_df, file = paste0("{export_pfx}_", curr_title, "_de_results.tsv"))
   sig_df <- df %>% filter(significant & !is.na(gene) & gene != "")
   
   # Volcano
