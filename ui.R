@@ -57,67 +57,100 @@ ui <- page_navbar(
   ),
   
   nav_panel(
-    "3. Interactive Differential Analysis",
+    title = "3. Differential Expression & Visualization",
     sidebarLayout(
       sidebarPanel(
-        width = 3, # Keeps sidebar concise so main panel gets maximum width
-        uiOutput("comparison_selector"),
-        checkboxInput("flip_direction", "Invert Contrast Direction (Flip Sign)", value = FALSE),
-        selectInput("plot_type", "Plot Type:", choices = c("Volcano", "MA", "Scatter")),
-        hr(),
-        h5("Plot Styling Controls"),
-        sliderInput("point_size", "Point Size:", min = 0.5, max = 5, value = 2, step = 0.5),
-        sliderInput("text_size", "Axis Label Size:", min = 8, max = 20, value = 12),
-        hr(),
-        hr(),
-        h5("Gene Label Settings"),
-        checkboxInput("show_labels", "Display Gene Labels", value = TRUE),
+        width = 4,
         
-        conditionalPanel(
-          condition = "input.show_labels == true",
-          sliderInput("label_size", "Label Text Size:", min = 1, max = 8, value = 3),
-          sliderInput("max_overlaps", "Max Allowed Overlaps:", min = 1, max = 100, value = 15, step = 1)
+        # Comparison & Contrast Selection
+        tags$h4("Contrast Settings"),
+        uiOutput("comparison_selector"),
+        checkboxInput("flip_direction", "Invert Contrast Direction", value = FALSE),
+        
+        hr(style = "margin: 10px 0;"),
+        
+        # Plot Type & Cutoff Thresholds
+        tags$h4("Cutoffs & Plot Style"),
+        selectInput(
+          inputId = "plot_type",
+          label   = "Select Plot Layout:",
+          choices = c("Volcano", "MA", "Scatter"),
+          selected = "Volcano"
         ),
-        colourpicker::colourInput("col_up", "Upregulated Color:", value = "#66CCFE"),
-        colourpicker::colourInput("col_down", "Downregulated Color:", value = "#FF0066"),
         sliderInput(
           inputId = "adj_p_cutoff", 
-          label   = "Adjusted p-value cutoff (FDR):", 
+          label   = "Adjusted p-value Cutoff (FDR):", 
           min     = 0.0001, 
           max     = 0.20, 
           value   = 0.05, 
           step    = 0.005
         ),
-        sliderInput("fc_cutoff", "|log2 FC| cutoff:", min = 0, max = 4, value = 1, step = 0.25),
-        hr(),
-        h5("Export Current Plot"),
-        fluidRow(
-          column(6, numericInput("plot_width", "Width (in):", value = 8, min = 2, max = 20)),
-          column(6, numericInput("plot_height", "Height (in):", value = 6, min = 2, max = 20))
+        numericInput(
+          inputId = "fc_cutoff",
+          label   = "Log2 Fold Change Cutoff:",
+          value   = 1.0,
+          min     = 0,
+          step    = 0.1
         ),
-        downloadButton("download_plot_png", "Download PNG", class = "btn-outline-primary w-100 mb-2"),
-        downloadButton("download_plot_pdf", "Download PDF", class = "btn-outline-danger w-100")
+        
+        hr(style = "margin: 10px 0;"),
+        
+        # Standard DE Styling
+        tags$h4("Standard DE Highlighting & Labels"),
+        checkboxInput("show_de_colors", "Color Differentially Expressed Proteins", value = TRUE),
+        checkboxInput("show_de_labels", "Label Differentially Expressed Proteins", value = FALSE),
+        
+        fluidRow(
+          column(6, colourpicker::colourInput("col_up", "Upregulated:", value = "#66CCFE")),
+          column(6, colourpicker::colourInput("col_down", "Downregulated:", value = "#FF0066"))
+        ),
+        
+        hr(style = "margin: 10px 0;"),
+        
+        # Custom Protein Set Highlighting & Dynamic Inputs
+        tags$h4("Custom Protein Sets / Subsets"),
+        uiOutput("custom_protein_sets_ui"),
+        div(
+          style = "margin-top: 8px; margin-bottom: 15px;",
+          actionButton("btn_add_custom_set", "+ Add Protein Set", class = "btn-sm btn-primary"),
+          actionButton("btn_remove_custom_set", "- Remove Last Set", class = "btn-sm btn-outline-danger")
+        ),
+        
+        hr(style = "margin: 10px 0;"),
+        
+        # Plot Aesthetics & Export Sizing
+        tags$h4("Display & Label Tuning"),
+        fluidRow(
+          column(6, numericInput("point_size", "Point Size:", value = 2, min = 0.5, max = 10, step = 0.5)),
+          column(6, numericInput("text_size", "Axis Text Size:", value = 12, min = 6, max = 24, step = 1))
+        ),
+        fluidRow(
+          column(6, numericInput("label_size", "Label Text Size:", value = 3.5, min = 1, max = 10, step = 0.5)),
+          column(6, numericInput("max_overlaps", "Max Label Overlaps:", value = 10, min = 0, max = 100, step = 1))
+        ),
+        fluidRow(
+          column(6, numericInput("plot_width", "Export Width (in):", value = 8, min = 3, max = 20, step = 0.5)),
+          column(6, numericInput("plot_height", "Export Height (in):", value = 6, min = 3, max = 20, step = 0.5))
+        ),
+        
+        div(
+          style = "margin-top: 10px;",
+          downloadButton("download_plot_png", "Download PNG", class = "btn-sm btn-secondary"),
+          downloadButton("download_plot_pdf", "Download PDF", class = "btn-sm btn-secondary")
+        )
       ),
       
-      # Main panel taking up full width of remaining window space
       mainPanel(
-        width = 9,
+        width = 8,
         accordion(
-          id = "plots_accordion",
-          multiple = TRUE, # Allows BOTH panels to be open simultaneously
-          
-          # Panel 1: Interactive Plotly (On top)
+          open = c("Interactive Plotly Explorer", "Publication ggplot"),
           accordion_panel(
-            title = "Interactive Plotly View",
-            value = "plotly_panel",
-            plotlyOutput("plotly_view", height = "600px", width = "100%")
+            title = "Interactive Plotly Explorer",
+            plotlyOutput("plotly_view", height = "550px")
           ),
-          
-          # Panel 2: Publication ggplot (Below)
           accordion_panel(
-            title = "Publication-Ready ggplot View",
-            value = "ggplot_panel",
-            plotOutput("ggplot_view", height = "600px", width = "100%")
+            title = "Publication ggplot",
+            plotOutput("ggplot_view", height = "550px")
           )
         )
       )

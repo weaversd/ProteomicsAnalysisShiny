@@ -360,6 +360,8 @@ server <- function(input, output, session) {
   # ----------------------------------------------------------------------------
   # 4. Interactive Plot Engine (ggplot & Plotly)
   # ----------------------------------------------------------------------------
+  # server.R (Updated base_ggplot block)
+  
   base_ggplot <- reactive({
     req(rv$de_results, input$selected_comparison)
     df <- rv$de_results[[input$selected_comparison]]
@@ -367,7 +369,6 @@ server <- function(input, output, session) {
     exp_name <- attr(df, "exp_cond") %||% "Experimental"
     ref_name <- attr(df, "ref_cond") %||% "Reference"
     
-    # 1. Sign Inversion Handling
     if (is_flipped()) {
       df <- df %>%
         mutate(
@@ -386,27 +387,56 @@ server <- function(input, output, session) {
     raw_p_cutoff <- input$adj_p_cutoff
     log10_p_line <- -log10(raw_p_cutoff)
     
-    # 2. Assign Significance & Categories
+    # 1. Base DE Status
+    show_de <- isTRUE(input$show_de_colors)
     df <- df %>%
       mutate(
         significant = !is.na(adj.P.Val) & is.finite(logFC) & abs(logFC) > input$fc_cutoff & adj.P.Val < raw_p_cutoff,
         Regulation = case_when(
+          !show_de                 ~ "Background",
           is.infinite(logFC)       ~ "Dropout (1-Condition)",
           significant & logFC > 0  ~ "Upregulated",
           significant & logFC <= 0 ~ "Downregulated",
           TRUE                     ~ "Not Significant"
-        ),
-        Regulation = factor(Regulation, levels = c("Upregulated", "Downregulated", "Dropout (1-Condition)", "Not Significant"))
+        )
       )
     
-    # --------------------------------------------------------------------------
+    # 2. Assign Custom Protein Set Overrides
+    df <- assign_custom_protein_groups(df, input, rv$num_custom_sets)
+    
+    # Define final plotting factor: Custom Set overrides DE Status if matched & color enabled
+    df <- df %>%
+      mutate(
+        Final_Group = ifelse(!is.na(Custom_Group), Custom_Group, Regulation)
+      )
+    
+    # 3. Assemble Dynamic Color Palette
+    color_map <- c(
+      "Upregulated"           = input$col_up,
+      "Downregulated"         = input$col_down,
+      "Dropout (1-Condition)" = "grey40",
+      "Not Significant"       = "grey75",
+      "Background"            = "grey75"
+    )
+    
+    if (rv$num_custom_sets > 0) {
+      for (i in seq_len(rv$num_custom_sets)) {
+        set_name <- input[[paste0("custom_set_name_", i)]] %||% paste("Set", i)
+        set_col  <- input[[paste0("custom_set_col_", i)]]
+        if (!is.null(set_col)) color_map[set_name] <- set_col
+      }
+    }
+    
+    df$Final_Group <- factor(df$Final_Group, levels = c(names(color_map)))
+    
+    # ----------------------------------------------------------------------------
     # VOLCANO PLOT
-    # --------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------
     if (input$plot_type == "Volcano") {
       plot_df <- df %>% filter(is.finite(logFC) & !is.na(adj.P.Val))
       
       p <- ggplot(plot_df, aes(x = logFC, y = -log10(adj.P.Val), text = paste("Gene:", gene, "<br>Accession:", Accession))) +
-        geom_point(aes(color = Regulation), size = input$point_size) +
+        geom_point(aes(color = Final_Group), size = input$point_size) +
         geom_hline(yintercept = log10_p_line, linetype = 2, color = "grey50") +
         geom_vline(xintercept = c(-input$fc_cutoff, input$fc_cutoff), linetype = 2, color = "grey50") +
         labs(
@@ -415,34 +445,26 @@ server <- function(input, output, session) {
           y = "-Log10 Adjusted p-value"
         )
       
-      # --------------------------------------------------------------------------
+      # ----------------------------------------------------------------------------
       # MA PLOT
-      # --------------------------------------------------------------------------
-      # --------------------------------------------------------------------------
-      # 2. MA PLOT (Plots Inf / -Inf on Visual Caps)
-      # --------------------------------------------------------------------------
+      # ----------------------------------------------------------------------------
     } else if (input$plot_type == "MA") {
-      # Calculate valid finite fold changes for dynamic y-cap
       finite_fc <- df$logFC[!is.na(df$logFC) & is.finite(df$logFC)]
       y_cap <- if (length(finite_fc) > 0) max(abs(finite_fc), na.rm = TRUE) + 2 else 6
       
       plot_df <- df %>%
         mutate(
-          # 1. Ensure valid X-coordinate (AveExpr) uses whichever condition has data
           has_exp = !is.na(ExpQuant) & is.finite(ExpQuant),
           has_ref = !is.na(RefQuant) & is.finite(RefQuant),
-          
           AveExpr = case_when(
             has_exp & has_ref ~ ifelse(!is.na(AveExpr) & is.finite(AveExpr), AveExpr, (ExpQuant + RefQuant) / 2),
             has_exp & !has_ref ~ ExpQuant,
             !has_exp & has_ref ~ RefQuant,
             TRUE ~ NA_real_
           ),
-          
-          # 2. Robust placement on the caps for dropouts / infinite values
           plot_logFC = case_when(
-            has_exp & !has_ref ~ y_cap,          # Present in Exp only -> Top cap
-            !has_exp & has_ref ~ -y_cap,         # Present in Ref only -> Bottom cap
+            has_exp & !has_ref ~ y_cap,
+            !has_exp & has_ref ~ -y_cap,
             is.infinite(logFC) & logFC > 0 ~ y_cap,
             is.infinite(logFC) & logFC < 0 ~ -y_cap,
             TRUE ~ logFC
@@ -451,7 +473,7 @@ server <- function(input, output, session) {
         filter(!is.na(AveExpr) & !is.na(plot_logFC))
       
       p <- ggplot(plot_df, aes(x = AveExpr, y = plot_logFC, text = paste("Gene:", gene, "<br>Accession:", Accession))) +
-        geom_point(aes(color = Regulation), size = input$point_size) +
+        geom_point(aes(color = Final_Group), size = input$point_size) +
         geom_hline(yintercept = 0, color = "grey30") +
         geom_hline(yintercept = c(-input$fc_cutoff, input$fc_cutoff), linetype = 2, color = "grey50") +
         geom_hline(yintercept = c(-y_cap, y_cap), linetype = 3, color = "grey70") +
@@ -462,9 +484,9 @@ server <- function(input, output, session) {
           y = paste0("Log2 Fold Change (", exp_name, " / ", ref_name, ")")
         )
       
-      # --------------------------------------------------------------------------
+      # ----------------------------------------------------------------------------
       # SCATTER PLOT
-      # --------------------------------------------------------------------------
+      # ----------------------------------------------------------------------------
     } else if (input$plot_type == "Scatter") {
       all_quants <- c(df$RefQuant[is.finite(df$RefQuant)], df$ExpQuant[is.finite(df$ExpQuant)])
       axis_floor <- if (length(all_quants) > 0) min(all_quants, na.rm = TRUE) - 1 else 0
@@ -476,7 +498,7 @@ server <- function(input, output, session) {
         )
       
       p <- ggplot(plot_df, aes(x = plot_Ref, y = plot_Exp, text = paste("Gene:", gene, "<br>Accession:", Accession))) +
-        geom_point(aes(color = Regulation), size = input$point_size) +
+        geom_point(aes(color = Final_Group), size = input$point_size) +
         geom_abline(intercept = 0, slope = 1, linetype = 2, color = "grey50") +
         labs(
           title = paste("Scatter Plot:", input$selected_comparison), 
@@ -486,21 +508,9 @@ server <- function(input, output, session) {
     }
     
     p <- p + 
-      scale_color_manual(
-        name = "Expression Status",
-        values = c(
-          "Upregulated"           = input$col_up, 
-          "Downregulated"         = input$col_down, 
-          "Dropout (1-Condition)" = "grey40",
-          "Not Significant"       = "grey75"
-        ),
-        drop = FALSE
-      ) +
+      scale_color_manual(name = "Group", values = color_map, drop = TRUE) +
       theme_bw(base_size = input$text_size) +
-      theme(
-        panel.grid = element_blank(),
-        legend.position = "right"
-      )
+      theme(panel.grid = element_blank(), legend.position = "right")
     
     p
   })
@@ -514,62 +524,70 @@ server <- function(input, output, session) {
       )
   })
   
+  # server.R (Updated final_ggplot_object with Dual Labeling Support)
+  
   final_ggplot_object <- reactive({
-    show_lbls   <- input$show_labels
     lbl_size    <- input$label_size
     max_ovrlaps <- input$max_overlaps
     raw_p_cut   <- input$adj_p_cutoff
     fc_cut      <- input$fc_cutoff
+    show_de_lbl <- isTRUE(input$show_de_labels)
     
     p <- base_ggplot()
     req(rv$de_results, input$selected_comparison)
     
-    if (isTRUE(show_lbls)) {
-      df <- rv$de_results[[input$selected_comparison]]
-      
-      if (is_flipped()) {
-        df <- df %>%
-          mutate(
-            logFC = -logFC,
-            temp_exp = ExpQuant,
-            ExpQuant = RefQuant,
-            RefQuant = temp_exp
-          ) %>%
-          select(-temp_exp)
-      }
-      
-      df$significant <- !is.na(df$adj.P.Val) & is.finite(df$logFC) & abs(df$logFC) > fc_cut & df$adj.P.Val < raw_p_cut
-      sig_df <- df %>% filter(significant & !is.na(gene) & gene != "")
-      
-      if (nrow(sig_df) > 0) {
-        if (input$plot_type == "Volcano") {
-          p <- p + geom_label_repel(
-            data = sig_df,
-            aes(x = logFC, y = -log10(adj.P.Val), label = gene, group = paste0(gene, "_", max_ovrlaps)),
-            size = lbl_size,
-            max.overlaps = max_ovrlaps,
-            show.legend = FALSE,
-            inherit.aes = FALSE
-          )
-        } else if (input$plot_type == "MA") {
-          p <- p + geom_label_repel(
-            data = sig_df,
-            aes(x = AveExpr, y = logFC, label = gene, group = paste0(gene, "_", max_ovrlaps)),
-            size = lbl_size,
-            max.overlaps = max_ovrlaps,
-            show.legend = FALSE,
-            inherit.aes = FALSE
-          )
-        } else if (input$plot_type == "Scatter") {
-          p <- p + geom_label_repel(
-            data = sig_df,
-            aes(x = RefQuant, y = ExpQuant, label = gene, group = paste0(gene, "_", max_ovrlaps)),
-            size = lbl_size,
-            max.overlaps = max_ovrlaps,
-            show.legend = FALSE,
-            inherit.aes = FALSE
-          )
-        }
+    df <- rv$de_results[[input$selected_comparison]]
+    if (is_flipped()) {
+      df <- df %>%
+        mutate(
+          logFC = -logFC,
+          temp_exp = ExpQuant,
+          ExpQuant = RefQuant,
+          RefQuant = temp_exp
+        ) %>%
+        select(-temp_exp)
+    }
+    
+    # Determine DE significant status
+    df$de_sig <- !is.na(df$adj.P.Val) & is.finite(df$logFC) & abs(df$logFC) > fc_cut & df$adj.P.Val < raw_p_cut
+    
+    # Determine Custom set labels
+    df <- assign_custom_protein_groups(df, input, rv$num_custom_sets)
+    
+    # Target proteins to label: (DE proteins IF toggled) OR (Custom proteins IF toggled)
+    df <- df %>%
+      mutate(to_label = (show_de_lbl & de_sig) | Custom_Label)
+    
+    sig_df <- df %>% filter(to_label & !is.na(gene) & gene != "")
+    
+    if (nrow(sig_df) > 0) {
+      if (input$plot_type == "Volcano") {
+        p <- p + geom_label_repel(
+          data = sig_df %>% filter(is.finite(logFC) & !is.na(adj.P.Val)),
+          aes(x = logFC, y = -log10(adj.P.Val), label = gene, group = paste0(gene, "_", max_ovrlaps)),
+          size = lbl_size,
+          max.overlaps = max_ovrlaps,
+          show.legend = FALSE,
+          inherit.aes = FALSE
+        )
+      } else if (input$plot_type == "MA") {
+        p <- p + geom_label_repel(
+          data = sig_df,
+          aes(x = AveExpr, y = logFC, label = gene, group = paste0(gene, "_", max_ovrlaps)),
+          size = lbl_size,
+          max.overlaps = max_ovrlaps,
+          show.legend = FALSE,
+          inherit.aes = FALSE
+        )
+      } else if (input$plot_type == "Scatter") {
+        p <- p + geom_label_repel(
+          data = sig_df,
+          aes(x = RefQuant, y = ExpQuant, label = gene, group = paste0(gene, "_", max_ovrlaps)),
+          size = lbl_size,
+          max.overlaps = max_ovrlaps,
+          show.legend = FALSE,
+          inherit.aes = FALSE
+        )
       }
     }
     
@@ -578,6 +596,83 @@ server <- function(input, output, session) {
   
   output$ggplot_view <- renderPlot({
     final_ggplot_object()
+  })
+  
+  # Contrasting default colors (Amber Orange, Vivid Green, Vivid Purple, Golden Yellow, Bright Teal)
+  default_custom_colors <- c("#FF9900", "#33CC33", "#9933FF", "#FFCC00", "#00CCCC")
+  
+  # Initialize custom set counter inside rv
+  rv$num_custom_sets <- 1
+  
+  # Add / Remove set event handlers
+  observeEvent(input$btn_add_custom_set, {
+    rv$num_custom_sets <- rv$num_custom_sets + 1
+  })
+  
+  observeEvent(input$btn_remove_custom_set, {
+    if (rv$num_custom_sets > 0) {
+      rv$num_custom_sets <- rv$num_custom_sets - 1
+    }
+  })
+  
+  # Dynamic UI Renderer for Custom Sets
+  # server.R (Updated output$custom_protein_sets_ui with input persistence)
+  
+  output$custom_protein_sets_ui <- renderUI({
+    n <- rv$num_custom_sets
+    if (n == 0) return(tags$em("No custom protein sets active. Click '+ Add Protein Set' to create one."))
+    
+    lapply(seq_len(n), function(i) {
+      # 1. Grab previously entered values if they exist, otherwise use initial defaults
+      existing_name <- isolate(input[[paste0("custom_set_name_", i)]])
+      curr_name     <- if (!is.null(existing_name)) existing_name else paste("Set", i)
+      
+      existing_type <- isolate(input[[paste0("custom_set_type_", i)]])
+      curr_type     <- if (!is.null(existing_type)) existing_type else "list"
+      
+      existing_input <- isolate(input[[paste0("custom_set_input_", i)]])
+      curr_input     <- if (!is.null(existing_input)) existing_input else ""
+      
+      existing_col <- isolate(input[[paste0("custom_set_col_", i)]])
+      def_col      <- default_custom_colors[((i - 1) %% length(default_custom_colors)) + 1]
+      curr_col     <- if (!is.null(existing_col) && existing_col != "") existing_col else def_col
+      
+      existing_show_col <- isolate(input[[paste0("custom_set_show_col_", i)]])
+      curr_show_col     <- if (!is.null(existing_show_col)) existing_show_col else TRUE
+      
+      existing_show_lbl <- isolate(input[[paste0("custom_set_show_lbl_", i)]])
+      curr_show_lbl     <- if (!is.null(existing_show_lbl)) existing_show_lbl else TRUE
+      
+      # 2. Render UI Card with preserved values
+      tags$div(
+        style = "border: 1px solid #e3e3e3; border-radius: 5px; padding: 10px; margin-bottom: 10px; background-color: #fafafa;",
+        fluidRow(
+          column(8, tags$strong(paste("Set", i, "Name / Pattern:"))),
+          column(4, textInput(paste0("custom_set_name_", i), label = NULL, value = curr_name, placeholder = "Set Name"))
+        ),
+        radioButtons(
+          inputId  = paste0("custom_set_type_", i),
+          label    = NULL,
+          choices  = c("List (Genes/Accessions)" = "list", "Regex Match" = "regex"),
+          inline   = TRUE,
+          selected = curr_type
+        ),
+        textAreaInput(
+          inputId     = paste0("custom_set_input_", i),
+          label       = NULL,
+          value       = curr_input,
+          rows        = 2,
+          placeholder = "e.g., ACTB, GAPDH, P04406 or ^HIST.*"
+        ),
+        fluidRow(
+          column(6, colourpicker::colourInput(paste0("custom_set_col_", i), "Color:", value = curr_col)),
+          column(6,
+                 checkboxInput(paste0("custom_set_show_col_", i), "Highlight Color", value = curr_show_col),
+                 checkboxInput(paste0("custom_set_show_lbl_", i), "Show Labels", value = curr_show_lbl)
+          )
+        )
+      )
+    })
   })
   
   # ----------------------------------------------------------------------------
