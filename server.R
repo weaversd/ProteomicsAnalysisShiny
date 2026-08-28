@@ -173,6 +173,69 @@ server <- function(input, output, session) {
       select(Protein.ID, ID, LogInt) %>%
       pivot_wider(names_from = ID, values_from = LogInt)
     
+    # ----------------------------------------------------------------------------
+    # 1. Reference Protein Normalization (Prior Step)
+    # ----------------------------------------------------------------------------
+    if (isTRUE(input$enable_ref_norm) && !is.null(rv$geneDict)) {
+      query       <- trimws(input$ref_target_query)
+      target_type <- input$ref_target_type
+      
+      if (target_type == "gene") {
+        matched <- rv$geneDict %>% filter(toupper(gene) == toupper(query))
+      } else {
+        matched <- rv$geneDict %>% filter(toupper(Accession) == toupper(query))
+      }
+      
+      if (nrow(matched) == 0) {
+        showNotification(
+          paste0("Reference protein '", query, "' not found. Skipping reference normalization."),
+          type = "warning",
+          duration = 6
+        )
+      } else {
+        ref_protein_id <- matched$Accession[1]
+        ref_row <- wide_data %>% filter(Protein.ID == ref_protein_id)
+        
+        if (nrow(ref_row) == 0) {
+          showNotification("Reference protein has no quantification data.", type = "error")
+        } else {
+          sample_cols <- setdiff(names(wide_data), "Protein.ID")
+          ref_vals <- as.numeric(ref_row[1, sample_cols])
+          
+          if (any(is.na(ref_vals))) {
+            showNotification(
+              "Warning: Reference protein contains missing values (NAs) in some samples. Offset may be incomplete.",
+              type = "warning",
+              duration = 6
+            )
+          }
+          
+          global_ref_mean <- mean(ref_vals, na.rm = TRUE)
+          sample_offsets  <- ref_vals - global_ref_mean
+          
+          for (idx in seq_along(sample_cols)) {
+            col_name <- sample_cols[idx]
+            offset_val <- sample_offsets[idx]
+            if (!is.na(offset_val)) {
+              wide_data[[col_name]] <- wide_data[[col_name]] - offset_val
+            }
+          }
+          
+          rv$audit_log$reference_protein_norm <- list(
+            enabled   = TRUE,
+            target    = query,
+            accession = ref_protein_id,
+            gene      = matched$gene[1]
+          )
+        }
+      }
+    } else {
+      rv$audit_log$reference_protein_norm <- list(enabled = FALSE)
+    }
+    
+    # ----------------------------------------------------------------------------
+    # 2. Global Normalization (QFeatures)
+    # ----------------------------------------------------------------------------
     qobj <- readQFeatures2(wide_data, ecol = 2:ncol(wide_data), fnames = "Protein.ID", name = "raw")
     
     if (input$norm_method != "none") {
@@ -186,6 +249,9 @@ server <- function(input, output, session) {
     mar_cells_count <- 0
     mnar_cells_count <- 0
     
+    # ----------------------------------------------------------------------------
+    # 3. Imputation
+    # ----------------------------------------------------------------------------
     if (input$impute_method == "Hybrid (MAR: KNN / MNAR: MinDet)") {
       global_mar <- MsCoreUtils::impute_matrix(norm_mat, method = "nbavg")
       global_min <- min(norm_mat, na.rm = TRUE)
@@ -673,6 +739,26 @@ server <- function(input, output, session) {
         )
       )
     })
+  })
+  
+  output$ref_norm_match_status <- renderText({
+    req(rv$raw_data, rv$geneDict, input$enable_ref_norm)
+    query <- trimws(input$ref_target_query)
+    if (query == "") return("Please enter a gene or accession.")
+    
+    target_type <- input$ref_target_type
+    
+    if (target_type == "gene") {
+      matched <- rv$geneDict %>% filter(toupper(gene) == toupper(query))
+    } else {
+      matched <- rv$geneDict %>% filter(toupper(Accession) == toupper(query))
+    }
+    
+    if (nrow(matched) == 0) {
+      return(paste0("❌ No match found for: '", query, "'"))
+    } else {
+      return(paste0("✓ Matched: ", matched$gene[1], " (", matched$Accession[1], ")"))
+    }
   })
   
   # ----------------------------------------------------------------------------
