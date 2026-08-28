@@ -161,3 +161,56 @@ plot_normalization_qc <- function(object,
   
   return(p)
 }
+
+
+
+# Helper: Parse and assign custom protein categories to dataframe
+assign_custom_protein_groups <- function(df, input, num_sets) {
+  # Default category
+  df$Custom_Group <- NA_character_
+  df$Custom_Label <- FALSE
+  
+  if (num_sets == 0) return(df)
+  
+  # Process sets in sequence
+  for (i in seq_len(num_sets)) {
+    raw_str   <- input[[paste0("custom_set_input_", i)]]
+    mode_type <- input[[paste0("custom_set_type_", i)]]
+    set_name  <- input[[paste0("custom_set_name_", i)]] %||% paste("Set", i)
+    show_col  <- isTRUE(input[[paste0("custom_set_show_col_", i)]])
+    show_lbl  <- isTRUE(input[[paste0("custom_set_show_lbl_", i)]])
+    
+    if (is.null(raw_str) || trimws(raw_str) == "") next
+    
+    matched_indices <- integer(0)
+    
+    if (mode_type == "regex") {
+      # Match regex against both gene symbols and Accession IDs
+      matched_indices <- which(
+        grepl(raw_str, df$gene, ignore.case = TRUE) | 
+          grepl(raw_str, df$Accession, ignore.case = TRUE)
+      )
+    } else {
+      # Split by comma, newline, carriage return, tab, or semicolon
+      tokens <- unlist(strsplit(raw_str, "[,;\n\r\t]+"))
+      tokens <- trimws(tokens)
+      tokens <- tokens[tokens != ""]
+      
+      matched_indices <- which(
+        toupper(df$gene) %in% toupper(tokens) | 
+          toupper(df$Accession) %in% toupper(tokens)
+      )
+    }
+    
+    if (length(matched_indices) > 0) {
+      if (show_col) {
+        df$Custom_Group[matched_indices] <- set_name
+      }
+      if (show_lbl) {
+        df$Custom_Label[matched_indices] <- TRUE
+      }
+    }
+  }
+  
+  return(df)
+}
