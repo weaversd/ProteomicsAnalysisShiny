@@ -26,11 +26,58 @@ ui <- page_navbar(
   ),
   
   nav_panel(
-    "2. Normalization & Imputation",
+    title = "2. Normalization & Imputation",
     sidebarLayout(
       sidebarPanel(
-        selectInput("norm_method", "Normalization Method:",
-                    choices = c("none", "center.median", "center.mean", "quantiles", "quantiles.robust")),
+        width = 4,
+        
+        # 1. Reference Protein Normalization (Pre-Step)
+        tags$h4("1. Reference Protein Normalization (Optional)"),
+        checkboxInput(
+          inputId = "enable_ref_norm", 
+          label   = "Normalize to Reference Protein / Loading Control", 
+          value   = FALSE
+        ),
+        
+        conditionalPanel(
+          condition = "input.enable_ref_norm == true",
+          radioButtons(
+            inputId  = "ref_target_type",
+            label    = "Search Reference By:",
+            choices  = c("Gene Symbol" = "gene", "Protein Accession" = "accession"),
+            inline   = TRUE,
+            selected = "gene"
+          ),
+          textInput(
+            inputId     = "ref_target_query",
+            label       = "Enter Identifier:",
+            value       = "Gapdh",
+            placeholder = "e.g., Gapdh, Actb, or P16858"
+          ),
+          verbatimTextOutput("ref_norm_match_status")
+        ),
+        
+        hr(style = "margin: 15px 0;"),
+        
+        # 2. Secondary / Global Normalization
+        tags$h4("2. Global Normalization"),
+        selectInput(
+          inputId = "norm_method",
+          label   = "Global Normalization Method:",
+          choices = c(
+            "None"                   = "none",
+            "Median Centering"       = "center.median",
+            "Mean Centering"         = "center.mean",
+            "Quantile Normalization" = "quantiles",
+            "Variance Stabilizing"   = "vsn"
+          ),
+          selected = "none"
+        ),
+        
+        hr(style = "margin: 15px 0;"),
+        
+        # 3. Imputation Settings
+        tags$h4("3. Imputation"),
         selectInput(
           inputId = "impute_method",
           label   = "Select Imputation Method:",
@@ -41,17 +88,38 @@ ui <- page_navbar(
             "knn",
             "nbavg",
             "None"
-          ), selected = "None"),
-        actionButton("btn_apply_norm", "Apply Transformation", class = "btn-success w-100")
+          ),
+          selected = "Hybrid (MAR: KNN / MNAR: MinDet)"
+        ),
+        
+        div(
+          style = "margin-top: 15px; margin-bottom: 10px;",
+          actionButton(
+            inputId = "btn_apply_norm", 
+            label   = "Apply Transformation", 
+            class   = "btn-primary btn-block w-100", 
+            icon    = icon("cogs")
+          )
+        )
       ),
+      
       mainPanel(
-        plotOutput("norm_qc_plot", height = "450px"),
-        hr(),
-        h5("Imputation Statistics"),
-        verbatimTextOutput("imputation_stats_text"),
-        hr(),
-        h5("Transformed Data Preview"),
-        DTOutput("transformed_data_table")
+        width = 8,
+        accordion(
+          open = c("Normalization QC Distributions", "Imputation Statistics", "Transformed Matrix Preview"),
+          accordion_panel(
+            title = "Normalization QC Distributions",
+            plotOutput("norm_qc_plot", height = "400px")
+          ),
+          accordion_panel(
+            title = "Imputation Statistics",
+            verbatimTextOutput("imputation_stats_text")
+          ),
+          accordion_panel(
+            title = "Transformed Matrix Preview",
+            DTOutput("transformed_data_table")
+          )
+        )
       )
     )
   ),

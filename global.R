@@ -8,7 +8,7 @@ cran_packages <- c(
 
 # Define Bioconductor packages
 bioc_packages <- c(
-  "QFeatures", "limma", "MsCoreUtils"
+  "QFeatures", "limma", "MsCoreUtils", "vsn"
 )
 
 # 1. Ensure BiocManager is installed (handles Bioconductor releases & dependencies)
@@ -214,3 +214,5 @@ assign_custom_protein_groups <- function(df, input, num_sets) {
   
   return(df)
 }
+
+#testthat::test_dir("tests/testthat")
