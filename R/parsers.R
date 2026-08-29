@@ -52,19 +52,20 @@ parse_spectronaut <- function(path) {
 parse_msfragger <- function(path) {
   df <- read.delim(path, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
   
+  # 1. Accession, Gene, Description Extraction
   acc_col <- intersect(c("Protein.ID", "Protein", "Protein ID", "Accession"), names(df))[1]
   if (is.na(acc_col)) {
     stop("Could not find a valid Protein ID column in the uploaded MSFragger file.")
   }
   
-  gene_col <- intersect(c("Gene", "PG.Genes", "Gene Name"), names(df))[1]
-  desc_col <- intersect(c("Description", "PG.ProteinDescriptions"), names(df))[1]
+  gene_col <- intersect(c("Gene", "PG.Genes", "Gene Name", "Gene.Name", "Gene Symbol"), names(df))[1]
+  desc_col <- intersect(c("Description", "PG.ProteinDescriptions", "Protein Description"), names(df))[1]
   
   geneDict <- df %>% 
     mutate(
-      Accession   = .data[[acc_col]],
-      gene        = if (!is.na(gene_col) && gene_col %in% names(df)) .data[[gene_col]] else .data[[acc_col]],
-      description = if (!is.na(desc_col) && desc_col %in% names(df)) .data[[desc_col]] else .data[[acc_col]]
+      Accession   = as.character(.data[[acc_col]]),
+      gene        = if (!is.na(gene_col) && gene_col %in% names(df)) as.character(.data[[gene_col]]) else as.character(.data[[acc_col]]),
+      description = if (!is.na(desc_col) && desc_col %in% names(df)) as.character(.data[[desc_col]]) else as.character(.data[[acc_col]])
     ) %>% 
     select(Accession, gene, description) %>% 
     mutate(
@@ -73,27 +74,36 @@ parse_msfragger <- function(path) {
     ) %>%
     distinct(Accession, .keep_all = TRUE)
   
-  # Regex accommodates either dot or space separators and explicitly excludes MaxLFQ
-  int_cols <- names(df)[which(grepl("[\\.\\s]Intensity$", names(df), ignore.case = TRUE) & !grepl("MaxLFQ", names(df), ignore.case = TRUE))]
+  # 2. Strict Selection of Quantitative Columns (Select ONE type only)
+  # Look for standard Intensity (excluding MaxLFQ)
+  std_int_cols <- names(df)[which(grepl("[ .]Intensity$", names(df)) & !grepl("MaxLFQ", names(df)))]
   
-  if (length(int_cols) == 0) {
-    int_cols <- names(df)[which(grepl("[\\.\\s]MaxLFQ[\\.\\s]Intensity$", names(df), ignore.case = TRUE))]
-  }
+  # Look for MaxLFQ Intensity
+  maxlfq_cols <- names(df)[which(grepl("[ .]MaxLFQ[ .]Intensity$", names(df)))]
   
-  if (length(int_cols) == 0) {
+  # Default to Standard Intensity if found; otherwise fallback to MaxLFQ
+  if (length(std_int_cols) > 0) {
+    int_cols <- std_int_cols
+  } else if (length(maxlfq_cols) > 0) {
+    int_cols <- maxlfq_cols
+  } else {
     stop("No valid intensity columns found in MSFragger file.")
   }
   
+  # 3. Process into Long Format
   df_proc <- df %>%
-    mutate(Protein.ID = .data[[acc_col]]) %>%
+    mutate(Protein.ID = as.character(.data[[acc_col]])) %>%
     select(Protein.ID, all_of(int_cols)) %>%
-    pivot_longer(cols = -Protein.ID, names_to = "ID", values_to = "Intensity") %>%
+    pivot_longer(cols = -Protein.ID, names_to = "Raw_ID", values_to = "Intensity") %>%
     mutate(
-      Intensity = as.numeric(Intensity),
-      Intensity = ifelse(Intensity == 0, NA, Intensity),
-      ID        = str_remove(ID, "[\\.\\s](MaxLFQ[\\.\\s])?Intensity$"),
+      Intensity = suppressWarnings(as.numeric(Intensity)),
+      Intensity = ifelse(Intensity == 0, NA_real_, Intensity),
+      # Clean ID to just the sample name (e.g. "C_1", "N_1")
+      ID = str_remove(Raw_ID, "[ .](MaxLFQ[ .])?Intensity$"),
       condition = str_remove_all(str_extract(ID, "x[0-9]+|[A-Za-z]+"), "x"),
       BR        = str_extract(ID, "\\d+$"),
+      condition = ifelse(is.na(condition) | condition == "", "Sample", condition),
+      BR        = ifelse(is.na(BR) | BR == "", "1", BR),
       LogInt    = log2(Intensity)
     ) %>%
     select(Protein.ID, ID, Intensity, condition, BR, LogInt)
