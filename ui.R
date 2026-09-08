@@ -1,6 +1,6 @@
 # ui.R
 ui <- page_navbar(
-  title = "Proteomics Explorer Dashboard",
+  title = paste0("Proteomics Explorer Dashboard (v", APP_VERSION, ")"),
   theme = bs_theme(version = 5, bootswatch = "flatly"),
   
   nav_panel(

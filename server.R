@@ -72,6 +72,7 @@ server <- function(input, output, session) {
       name = "raw"
     )
     
+    rv$audit_log$app_version <- APP_VERSION
     rv$audit_log$import_time <- Sys.time()
     rv$audit_log$source_type <- input$data_source
     rv$audit_log$file_name   <- input$file_upload$name
@@ -1217,7 +1218,7 @@ server <- function(input, output, session) {
       header_code <- glue::glue('
 # ==============================================================================
 # Automated Reproducible Proteomics Pipeline
-# Generated from Proteomics Explorer Dashboard
+# Generated from Proteomics Explorer Dashboard v{APP_VERSION}
 # Timestamp: {Sys.time()}
 # Execution Mode: {ifelse(mode_choice == "raw", "Raw Ingestion Pipeline", "State Ingestion Pipeline")}
 # ==============================================================================

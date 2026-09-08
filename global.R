@@ -226,4 +226,18 @@ assign_custom_protein_groups <- function(df, input, num_sets) {
   return(df)
 }
 
+
+get_app_version <- function() {
+  git_ver <- tryCatch(
+    system("git describe --tags --always", intern = TRUE),
+    error = function(e) NULL
+  )
+  if (!is.null(git_ver) && length(git_ver) > 0 && !grepl("fatal", git_ver)) {
+    return(sub("^v\\.?", "", git_ver))
+  }
+  "1.2.0" # Fallback static version if git binary is absent
+}
+
+APP_VERSION <- get_app_version()
+
 #testthat::test_dir("tests/testthat")
