@@ -3,12 +3,12 @@
 cran_packages <- c(
   "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
   "stringr", "ggplot2", "ggrepel", "plotly", "DT", 
-  "openxlsx", "jsonlite", "colourpicker", "glue", "testthat"
+  "openxlsx", "jsonlite", "colourpicker", "glue", "testthat", "readxl"
 )
 
 # Define Bioconductor packages
 bioc_packages <- c(
-  "QFeatures", "limma", "MsCoreUtils", "vsn"
+  "QFeatures", "limma", "MsCoreUtils", "vsn", "clusterProfiler", "enrichplot"
 )
 
 # 1. Ensure BiocManager is installed (handles Bioconductor releases & dependencies)
@@ -32,6 +32,17 @@ if (length(missing_bioc) > 0) {
   message("Installing missing Bioconductor packages: ", paste(missing_bioc, collapse = ", "))
   BiocManager::install(missing_bioc, ask = FALSE, update = FALSE)
 }
+
+
+suppressPackageStartupMessages({
+  library(clusterProfiler)
+  library(enrichplot)
+  library(readxl)
+  # Pre-load or ensure annotation packages are available
+  if (requireNamespace("org.Mm.eg.db", quietly = TRUE)) library(org.Mm.eg.db)
+  if (requireNamespace("org.Hs.eg.db", quietly = TRUE)) library(org.Hs.eg.db)
+})
+
 
 # 5. Load all packages
 all_packages <- c(cran_packages, bioc_packages)
