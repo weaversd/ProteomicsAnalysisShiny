@@ -1020,6 +1020,219 @@ server <- function(input, output, session) {
   )
   
   # ----------------------------------------------------------------------------
+  # GSEA Pathway-Specific DE Plot (Volcano / MA / Scatter)
+  # ----------------------------------------------------------------------------
+  pathway_de_ggplot <- reactive({
+    req(rv_enrich$gsea_res, input$gsea_selected_pathway, rv_enrich$contrast_df)
+    
+    gsea_obj <- rv_enrich$gsea_res
+    path_id  <- input$gsea_selected_pathway
+    df       <- as.data.frame(rv_enrich$contrast_df)
+    
+    # 1. Identify key columns in the active contrast dataframe
+    acc_col <- intersect(c("Accession", "Protein.ID", "UNIPROT"), names(df))[1]
+    fc_col  <- intersect(c("logFC", "Log2FC"), names(df))[1]
+    p_col   <- intersect(c("adj.P.Val", "FDR", "pvalue"), names(df))[1]
+    gene_col <- intersect(c("gene", "Gene", "Gene.Name", "PG.Genes"), names(df))[1]
+    
+    req(!is.na(acc_col), !is.na(fc_col))
+    
+    df$Accession_clean <- gsub("^.*\\|([A-Za-z0-9]+)\\|.*$", "\\1", as.character(df[[acc_col]]))
+    df$Accession_clean <- gsub("-.*$", "", df$Accession_clean)
+    
+    df$gene_symbol <- if (!is.na(gene_col) && gene_col %in% names(df)) {
+      as.character(df[[gene_col]])
+    } else {
+      df$Accession_clean
+    }
+    df$gene_symbol <- ifelse(is.na(df$gene_symbol) | df$gene_symbol == "", df$Accession_clean, df$gene_symbol)
+    
+    # 2. Extract Entrez IDs belonging to this specific pathway
+    pathway_entrez <- gsea_obj@geneSets[[path_id]]
+    req(length(pathway_entrez) > 0)
+    
+    # 3. Map pathway Entrez IDs back to UniProt using active OrgDb
+    org_code <- input$enrich_organism
+    org_db   <- if (org_code == "mmu") org.Mm.eg.db::org.Mm.eg.db else org.Hs.eg.db::org.Hs.eg.db
+    
+    mapped_back <- tryCatch({
+      clusterProfiler::bitr(
+        pathway_entrez,
+        fromType = "ENTREZID",
+        toType   = "UNIPROT",
+        OrgDb    = org_db
+      )
+    }, error = function(e) NULL)
+    
+    pathway_uniprots <- if (!is.null(mapped_back)) unique(mapped_back$UNIPROT) else character(0)
+    
+    # 4. Mark pathway membership
+    df <- df %>%
+      mutate(
+        is_pathway = Accession_clean %in% pathway_uniprots,
+        plot_group = factor(
+          ifelse(is_pathway, "Pathway Protein", "Other Proteins"),
+          levels = c("Other Proteins", "Pathway Protein")
+        )
+      )
+    
+    # Extract path description for title
+    res_df <- as.data.frame(gsea_obj)
+    path_desc <- res_df$Description[res_df$ID == path_id][1]
+    plot_title <- paste0(path_desc, " (", path_id, ")")
+    
+    # Inherit visual parameters from Tab 3 inputs (with safe fallbacks)
+    pt_size     <- input$point_size %||% 2.5
+    txt_size    <- input$text_size %||% 12
+    lbl_size    <- input$label_size %||% 3.5
+    max_ovrlaps <- input$max_overlaps %||% 15
+    plot_layout <- input$plot_type %||% "Volcano"
+    fc_cut      <- input$fc_cutoff %||% 1.0
+    p_cut       <- input$adj_p_cutoff %||% 0.05
+    
+    # --------------------------------------------------------------------------
+    # VOLCANO
+    # --------------------------------------------------------------------------
+    if (plot_layout == "Volcano") {
+      plot_df <- df %>% filter(is.finite(.data[[fc_col]]) & !is.na(.data[[p_col]]))
+      
+      p <- ggplot(plot_df, aes(x = .data[[fc_col]], y = -log10(.data[[p_col]]))) +
+        geom_point(aes(color = plot_group, size = plot_group, alpha = plot_group)) +
+        geom_hline(yintercept = -log10(p_cut), linetype = 2, color = "grey60") +
+        geom_vline(xintercept = c(-fc_cut, fc_cut), linetype = 2, color = "grey60") +
+        labs(
+          title = plot_title,
+          x = "Log2 Fold Change",
+          y = "-Log10 Adjusted p-value"
+        )
+      
+      # --------------------------------------------------------------------------
+      # MA PLOT
+      # --------------------------------------------------------------------------
+    } else if (plot_layout == "MA") {
+      # Calculate AveExpr if missing
+      exp_col <- intersect(names(df), c("ExpQuant", grep("_Mean$", names(df), value = TRUE)))[1]
+      ref_col <- intersect(names(df), c("RefQuant", grep("_Mean$", names(df), value = TRUE)))[2]
+      
+      plot_df <- df %>%
+        mutate(
+          AveExpr = if ("AveExpr" %in% names(df) && !all(is.na(df$AveExpr))) {
+            df$AveExpr
+          } else if (!is.na(exp_col) && !is.na(ref_col)) {
+            (as.numeric(.data[[exp_col]]) + as.numeric(.data[[ref_col]])) / 2
+          } else {
+            0
+          }
+        ) %>%
+        filter(is.finite(.data[[fc_col]]) & is.finite(AveExpr))
+      
+      p <- ggplot(plot_df, aes(x = AveExpr, y = .data[[fc_col]])) +
+        geom_point(aes(color = plot_group, size = plot_group, alpha = plot_group)) +
+        geom_hline(yintercept = 0, color = "grey40") +
+        geom_hline(yintercept = c(-fc_cut, fc_cut), linetype = 2, color = "grey60") +
+        labs(
+          title = plot_title,
+          x = "Average Log2 Expression",
+          y = "Log2 Fold Change"
+        )
+      
+      # --------------------------------------------------------------------------
+      # SCATTER PLOT
+      # --------------------------------------------------------------------------
+    } else {
+      exp_col <- intersect(names(df), c("ExpQuant", grep("_Mean$", names(df), value = TRUE)))[1]
+      ref_col <- intersect(names(df), c("RefQuant", grep("_Mean$", names(df), value = TRUE)))[2]
+      
+      req(!is.na(exp_col), !is.na(ref_col))
+      plot_df <- df %>% filter(is.finite(.data[[ref_col]]) & is.finite(.data[[exp_col]]))
+      
+      p <- ggplot(plot_df, aes(x = .data[[ref_col]], y = .data[[exp_col]])) +
+        geom_point(aes(color = plot_group, size = plot_group, alpha = plot_group)) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2, color = "grey60") +
+        labs(
+          title = plot_title,
+          x = "Reference Abundance",
+          y = "Experimental Abundance"
+        )
+    }
+    
+    # 5. Styling: Distinct Color, Size, and Order
+    p <- p +
+      scale_color_manual(
+        name   = "Status",
+        values = c("Other Proteins" = "grey82", "Pathway Protein" = "#E69F00")
+      ) +
+      scale_size_manual(
+        name   = "Status",
+        values = c("Other Proteins" = pt_size * 0.8, "Pathway Protein" = pt_size * 1.5)
+      ) +
+      scale_alpha_manual(
+        name   = "Status",
+        values = c("Other Proteins" = 0.45, "Pathway Protein" = 1.0)
+      ) +
+      theme_bw(base_size = txt_size) +
+      theme(
+        panel.grid      = element_blank(),
+        legend.position = "bottom",
+        plot.title      = element_text(face = "bold", size = txt_size)
+      )
+    
+    # 6. Add labels specifically for the pathway proteins
+    pathway_pts <- plot_df %>% filter(is_pathway)
+    if (nrow(pathway_pts) > 0) {
+      if (plot_layout == "Volcano") {
+        p <- p + ggrepel::geom_label_repel(
+          data          = pathway_pts,
+          aes(x = .data[[fc_col]], y = -log10(.data[[p_col]]), label = gene_symbol),
+          size          = lbl_size,
+          max.overlaps  = max_ovrlaps,
+          box.padding   = 0.35,
+          color         = "black",
+          fill          = alpha("white", 0.85),
+          show.legend   = FALSE
+        )
+      } else if (plot_layout == "MA") {
+        p <- p + ggrepel::geom_label_repel(
+          data          = pathway_pts,
+          aes(x = AveExpr, y = .data[[fc_col]], label = gene_symbol),
+          size          = lbl_size,
+          max.overlaps  = max_ovrlaps,
+          box.padding   = 0.35,
+          color         = "black",
+          fill          = alpha("white", 0.85),
+          show.legend   = FALSE
+        )
+      } else {
+        p <- p + ggrepel::geom_label_repel(
+          data          = pathway_pts,
+          aes(x = .data[[ref_col]], y = .data[[exp_col]], label = gene_symbol),
+          size          = lbl_size,
+          max.overlaps  = max_ovrlaps,
+          box.padding   = 0.35,
+          color         = "black",
+          fill          = alpha("white", 0.85),
+          show.legend   = FALSE
+        )
+      }
+    }
+    
+    p
+  })
+  
+  # Render plot output
+  output$gsea_pathway_de_plot <- renderPlot({
+    pathway_de_ggplot()
+  })
+  
+  # Download Handler for the new plot
+  output$download_gsea_de_plot_png <- downloadHandler(
+    filename = function() { paste0("Pathway_DE_", input$gsea_selected_pathway, ".png") },
+    content = function(file) {
+      ggplot2::ggsave(file, plot = pathway_de_ggplot(), width = 8, height = 7, dpi = 300)
+    }
+  )
+  
+  # ----------------------------------------------------------------------------
   # 5. Audit Log & Export Handlers
   # ----------------------------------------------------------------------------
   output$audit_preview <- renderText({
