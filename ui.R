@@ -313,14 +313,25 @@ ui <- page_navbar(
             )
           ),
           accordion_panel(
-            title = "Specific Pathway GSEA Plot",
+            title = "Specific Pathway GSEA & Distribution Plots",
             conditionalPanel(
               condition = "input.enrich_method == 'gsea'",
-              plotOutput("gsea_single_plot", height = "450px")
+              fluidRow(
+                column(6,
+                       tags$h5("Running Enrichment Score"),
+                       plotOutput("gsea_single_plot", height = "480px"),
+                       downloadButton("download_gsea_pathway_png", "Download GSEA Plot", class = "btn-sm btn-secondary mt-2")
+                ),
+                column(6,
+                       tags$h5("Pathway Proteins on DE Distribution"),
+                       plotOutput("gsea_pathway_de_plot", height = "480px"),
+                       downloadButton("download_gsea_de_plot_png", "Download Pathway DE Plot", class = "btn-sm btn-secondary mt-2")
+                )
+              )
             ),
             conditionalPanel(
               condition = "input.enrich_method != 'gsea'",
-              tags$em("Single pathway running-score plots are available in GSEA mode.")
+              tags$em("Single pathway running-score and distribution plots are available in GSEA mode.")
             )
           ),
           accordion_panel(
