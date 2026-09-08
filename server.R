@@ -72,6 +72,7 @@ server <- function(input, output, session) {
       name = "raw"
     )
     
+    rv$audit_log$app_version <- APP_VERSION
     rv$audit_log$import_time <- Sys.time()
     rv$audit_log$source_type <- input$data_source
     rv$audit_log$file_name   <- input$file_upload$name
@@ -762,6 +763,263 @@ server <- function(input, output, session) {
   })
   
   # ----------------------------------------------------------------------------
+  # KEGG & GSEA Module Reactives & Observers
+  # ----------------------------------------------------------------------------
+  rv_enrich <- reactiveValues(
+    raw_excel_sheets = list(),
+    contrast_df = NULL,
+    kegg_res = NULL,
+    gsea_res = NULL
+  )
+  
+  # 1. Read Excel if uploaded
+  observeEvent(input$enrich_file_upload, {
+    req(input$enrich_file_upload)
+    sheets <- readxl::excel_sheets(input$enrich_file_upload$datapath)
+    sheet_list <- lapply(sheets, function(s) {
+      readxl::read_excel(input$enrich_file_upload$datapath, sheet = s)
+    })
+    names(sheet_list) <- sheets
+    rv_enrich$raw_excel_sheets <- sheet_list
+  })
+  
+  # 2. Dynamic Contrast / Sheet Selector
+  output$enrich_contrast_selector <- renderUI({
+    if (input$enrich_data_source == "app") {
+      req(rv$de_results)
+      selectInput("enrich_selected_contrast", "Select Contrast:", choices = names(rv$de_results))
+    } else {
+      req(length(rv_enrich$raw_excel_sheets) > 0)
+      selectInput("enrich_selected_contrast", "Select Excel Sheet / Contrast:", choices = names(rv_enrich$raw_excel_sheets))
+    }
+  })
+  
+  # 3. Pull Contrast Data (Respects 'invert contrast direction' toggle)
+  observe({
+    req(input$enrich_selected_contrast)
+    
+    if (input$enrich_data_source == "app") {
+      req(rv$de_results[[input$enrich_selected_contrast]])
+      df <- rv$de_results[[input$enrich_selected_contrast]]
+      
+      # If inverted in the visualization tab, invert logFC and condition means
+      if (is_flipped()) {
+        df <- df %>%
+          mutate(
+            logFC = -logFC,
+            temp_exp = ExpQuant,
+            ExpQuant = RefQuant,
+            RefQuant = temp_exp
+          ) %>%
+          select(-temp_exp)
+      }
+      
+      rv_enrich$contrast_df <- df
+    } else {
+      req(rv_enrich$raw_excel_sheets[[input$enrich_selected_contrast]])
+      rv_enrich$contrast_df <- rv_enrich$raw_excel_sheets[[input$enrich_selected_contrast]]
+    }
+  })
+  
+  # 4. Run Analysis Observer
+  observeEvent(input$btn_run_enrichment, {
+    req(rv_enrich$contrast_df)
+    df <- as.data.frame(rv_enrich$contrast_df)
+    
+    # Identify key columns
+    acc_col <- intersect(c("Accession", "Protein.ID", "UNIPROT"), names(df))[1]
+    fc_col  <- intersect(c("logFC", "Log2FC"), names(df))[1]
+    p_col   <- intersect(c("adj.P.Val", "FDR", "pvalue"), names(df))[1]
+    
+    if (is.na(acc_col) || is.na(fc_col)) {
+      showNotification("Missing 'Accession' or 'logFC' columns in selected table.", type = "error")
+      return()
+    }
+    
+    # Select organism OrgDb
+    org_code <- input$enrich_organism
+    org_db <- if (org_code == "mmu") org.Mm.eg.db::org.Mm.eg.db else org.Hs.eg.db::org.Hs.eg.db
+    
+    # Clean UniProt IDs (remove isoform suffixes or pipes like sp|P12345|...)
+    raw_acc <- as.character(df[[acc_col]])
+    clean_acc <- gsub("^.*\\|([A-Za-z0-9]+)\\|.*$", "\\1", raw_acc)
+    clean_acc <- gsub("-.*$", "", clean_acc)
+    df$clean_accession <- clean_acc
+    
+    withProgress(message = "Running Pathway Enrichment...", value = 0.2, {
+      
+      # Map UniProt to Entrez ID
+      incProgress(0.2, detail = "Mapping UniProt to Entrez IDs...")
+      mapped_ids <- tryCatch({
+        clusterProfiler::bitr(
+          unique(df$clean_accession),
+          fromType = "UNIPROT",
+          toType   = "ENTREZID",
+          OrgDb    = org_db
+        )
+      }, error = function(e) NULL)
+      
+      if (is.null(mapped_ids) || nrow(mapped_ids) == 0) {
+        showNotification("Could not map Accessions to Entrez IDs for this organism.", type = "error")
+        return()
+      }
+      
+      df_mapped <- merge(df, mapped_ids, by.x = "clean_accession", by.y = "UNIPROT")
+      
+      # ------------------------------------------------------------------------
+      # A. KEGG Over-Representation Analysis (ORA)
+      # ------------------------------------------------------------------------
+      if (input$enrich_method == "kegg") {
+        incProgress(0.4, detail = "Calculating KEGG over-representation...")
+        p_cut  <- input$enrich_p_cutoff
+        fc_cut <- input$enrich_fc_cutoff
+        
+        # Direction filter
+        if (input$enrich_kegg_dir == "up") {
+          target_acc <- df$clean_accession[!is.na(df[[p_col]]) & df[[p_col]] < p_cut & df[[fc_col]] > fc_cut]
+        } else if (input$enrich_kegg_dir == "down") {
+          target_acc <- df$clean_accession[!is.na(df[[p_col]]) & df[[p_col]] < p_cut & df[[fc_col]] < -fc_cut]
+        } else {
+          target_acc <- df$clean_accession[!is.na(df[[p_col]]) & df[[p_col]] < p_cut & abs(df[[fc_col]]) > fc_cut]
+        }
+        
+        target_entrez <- mapped_ids$ENTREZID[mapped_ids$UNIPROT %in% target_acc]
+        universe_entrez <- unique(mapped_ids$ENTREZID)
+        
+        if (length(target_entrez) < 5) {
+          showNotification("Fewer than 5 significant proteins mapped to Entrez IDs. Try relaxing cutoffs.", type = "warning")
+        }
+        
+        kegg_out <- tryCatch({
+          clusterProfiler::enrichKEGG(
+            gene          = unique(target_entrez),
+            universe      = universe_entrez,
+            organism      = org_code,
+            keyType       = "kegg",
+            pAdjustMethod = "BH",
+            pvalueCutoff  = input$enrich_kegg_pvalue_cut,
+            qvalueCutoff  = 0.2
+          )
+        }, error = function(e) {
+          showNotification(paste("KEGG enrichment error:", e$message), type = "error")
+          NULL
+        })
+        
+        rv_enrich$kegg_res <- kegg_out
+        rv_enrich$gsea_res <- NULL
+        
+        # ------------------------------------------------------------------------
+        # B. KEGG Gene Set Enrichment Analysis (GSEA)
+        # ------------------------------------------------------------------------
+      } else if (input$enrich_method == "gsea") {
+        incProgress(0.4, detail = "Ranking genes and executing GSEA...")
+        
+        # Sort by absolute fold change to resolve duplicates, keeping top magnitude per Entrez
+        df_ranked <- df_mapped[order(abs(df_mapped[[fc_col]]), decreasing = TRUE), ]
+        df_ranked <- df_ranked[!duplicated(df_ranked$ENTREZID), ]
+        
+        gene_list <- df_ranked[[fc_col]]
+        names(gene_list) <- df_ranked$ENTREZID
+        gene_list <- sort(gene_list, decreasing = TRUE)
+        
+        gsea_out <- tryCatch({
+          clusterProfiler::gseKEGG(
+            geneList      = gene_list,
+            organism      = org_code,
+            pvalueCutoff  = input$enrich_gsea_pvalue_cut,
+            pAdjustMethod = "BH",
+            verbose       = FALSE
+          )
+        }, error = function(e) {
+          showNotification(paste("GSEA execution error:", e$message), type = "error")
+          NULL
+        })
+        
+        rv_enrich$gsea_res <- gsea_out
+        rv_enrich$kegg_res <- NULL
+      }
+      
+      incProgress(0.2, detail = "Complete!")
+    })
+    
+    showNotification("Analysis completed successfully!", type = "message")
+  })
+  
+  # 5. Populate GSEA Pathway Dropdown
+  output$gsea_pathway_selector <- renderUI({
+    req(rv_enrich$gsea_res)
+    res_df <- as.data.frame(rv_enrich$gsea_res)
+    if (nrow(res_df) == 0) return(tags$em("No enriched pathways found at current cutoff."))
+    
+    choices_vec <- setNames(res_df$ID, paste0(res_df$Description, " (", res_df$ID, ")"))
+    selectInput("gsea_selected_pathway", "Select Pathway to View:", choices = choices_vec)
+  })
+  
+  # 6. Render Dot Plot (Reactively handles ORA vs GSEA)
+  output$enrich_dotplot <- renderPlot({
+    if (input$enrich_method == "kegg") {
+      req(rv_enrich$kegg_res)
+      if (nrow(as.data.frame(rv_enrich$kegg_res)) == 0) {
+        plot(1, 1, type = "n", axes = FALSE, xlab = "", ylab = "", main = "No significant KEGG pathways found.")
+        return()
+      }
+      enrichplot::dotplot(rv_enrich$kegg_res, showCategory = 15, title = "KEGG Pathway Over-Representation")
+    } else {
+      req(rv_enrich$gsea_res)
+      if (nrow(as.data.frame(rv_enrich$gsea_res)) == 0) {
+        plot(1, 1, type = "n", axes = FALSE, xlab = "", ylab = "", main = "No significant GSEA pathways found.")
+        return()
+      }
+      enrichplot::dotplot(rv_enrich$gsea_res, showCategory = 10, split = ".sign") + 
+        ggplot2::facet_grid(. ~ .sign) +
+        ggplot2::labs(title = "KEGG GSEA Pathway Enrichment (Activated vs Suppressed)")
+    }
+  })
+  
+  # 7. Render Single Pathway GSEA Plot
+  output$gsea_single_plot <- renderPlot({
+    req(rv_enrich$gsea_res, input$gsea_selected_pathway)
+    path_id <- input$gsea_selected_pathway
+    res_df <- as.data.frame(rv_enrich$gsea_res)
+    desc <- res_df$Description[res_df$ID == path_id][1]
+    
+    enrichplot::gseaplot2(rv_enrich$gsea_res, geneSetID = path_id, title = desc)
+  })
+  
+  # 8. Render Results Table
+  output$enrich_table <- renderDT({
+    res_obj <- if (input$enrich_method == "kegg") rv_enrich$kegg_res else rv_enrich$gsea_res
+    req(res_obj)
+    df <- as.data.frame(res_obj)
+    datatable(df, options = list(pageLength = 10, scrollX = TRUE))
+  })
+  
+  # 9. Download Handlers
+  output$download_enrich_dotplot_png <- downloadHandler(
+    filename = function() { paste0("Enrichment_dotplot_", input$enrich_method, ".png") },
+    content = function(file) {
+      p <- if (input$enrich_method == "kegg") {
+        enrichplot::dotplot(rv_enrich$kegg_res, showCategory = 15, title = "KEGG Pathway Over-Representation")
+      } else {
+        enrichplot::dotplot(rv_enrich$gsea_res, showCategory = 10, split = ".sign") + ggplot2::facet_grid(. ~ .sign)
+      }
+      ggplot2::ggsave(file, plot = p, width = 10, height = 7, dpi = 300)
+    }
+  )
+  
+  output$download_gsea_pathway_png <- downloadHandler(
+    filename = function() { paste0("GSEA_Pathway_", input$gsea_selected_pathway, ".png") },
+    content = function(file) {
+      req(rv_enrich$gsea_res, input$gsea_selected_pathway)
+      path_id <- input$gsea_selected_pathway
+      res_df <- as.data.frame(rv_enrich$gsea_res)
+      desc <- res_df$Description[res_df$ID == path_id][1]
+      p <- enrichplot::gseaplot2(rv_enrich$gsea_res, geneSetID = path_id, title = desc)
+      ggplot2::ggsave(file, plot = p, width = 10, height = 7, dpi = 300)
+    }
+  )
+  
+  # ----------------------------------------------------------------------------
   # 5. Audit Log & Export Handlers
   # ----------------------------------------------------------------------------
   output$audit_preview <- renderText({
@@ -960,7 +1218,7 @@ server <- function(input, output, session) {
       header_code <- glue::glue('
 # ==============================================================================
 # Automated Reproducible Proteomics Pipeline
-# Generated from Proteomics Explorer Dashboard
+# Generated from Proteomics Explorer Dashboard v{APP_VERSION}
 # Timestamp: {Sys.time()}
 # Execution Mode: {ifelse(mode_choice == "raw", "Raw Ingestion Pipeline", "State Ingestion Pipeline")}
 # ==============================================================================

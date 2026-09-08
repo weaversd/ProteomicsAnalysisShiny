@@ -1,6 +1,6 @@
 # ui.R
 ui <- page_navbar(
-  title = "Proteomics Explorer Dashboard",
+  title = paste0("Proteomics Explorer Dashboard (v", APP_VERSION, ")"),
   theme = bs_theme(version = 5, bootswatch = "flatly"),
   
   nav_panel(
@@ -224,9 +224,115 @@ ui <- page_navbar(
       )
     )
   ),
-  
   nav_panel(
-    "4. Export & Audit Trail",
+    title = "4. KEGG & GSEA Enrichment",
+    sidebarLayout(
+      sidebarPanel(
+        width = 4,
+        
+        # 1. Data Source Selection
+        tags$h4("1. Data Ingestion"),
+        radioButtons(
+          inputId = "enrich_data_source",
+          label   = "Input Differential Expression Data:",
+          choices = c("Use Active App Analysis" = "app", "Upload Excel Export (.xlsx)" = "upload"),
+          selected = "app"
+        ),
+        conditionalPanel(
+          condition = "input.enrich_data_source == 'upload'",
+          fileInput("enrich_file_upload", "Upload Excel File", accept = c(".xlsx"))
+        ),
+        uiOutput("enrich_contrast_selector"),
+        
+        hr(style = "margin: 15px 0;"),
+        
+        # 2. Organism & Analysis Type
+        tags$h4("2. Annotation & Method"),
+        selectInput(
+          inputId = "enrich_organism",
+          label   = "Select Organism:",
+          choices = c("Mouse (Mus musculus)" = "mmu", "Human (Homo sapiens)" = "hsa"),
+          selected = "mmu"
+        ),
+        radioButtons(
+          inputId = "enrich_method",
+          label   = "Enrichment Type:",
+          choices = c("KEGG Over-Representation (ORA)" = "kegg", "KEGG GSEA (Ranked)" = "gsea"),
+          selected = "kegg"
+        ),
+        
+        # 3. Parameters for KEGG ORA
+        conditionalPanel(
+          condition = "input.enrich_method == 'kegg'",
+          hr(style = "margin: 15px 0;"),
+          tags$h4("3. KEGG ORA Parameters"),
+          radioButtons(
+            inputId = "enrich_kegg_dir",
+            label   = "Protein Direction:",
+            choices = c("All Significant" = "all", "Upregulated Only" = "up", "Downregulated Only" = "down"),
+            selected = "all"
+          ),
+          sliderInput("enrich_p_cutoff", "Adj. P-value Cutoff:", min = 0.001, max = 0.1, value = 0.05, step = 0.005),
+          numericInput("enrich_fc_cutoff", "Log2 Fold Change Cutoff:", value = 0.58, min = 0, step = 0.1),
+          numericInput("enrich_kegg_pvalue_cut", "Enrichment p-value Cutoff:", value = 0.05, min = 0.001, max = 0.5, step = 0.01)
+        ),
+        
+        # 4. Parameters for GSEA
+        conditionalPanel(
+          condition = "input.enrich_method == 'gsea'",
+          hr(style = "margin: 15px 0;"),
+          tags$h4("3. GSEA Parameters"),
+          numericInput("enrich_gsea_pvalue_cut", "GSEA p-value Cutoff:", value = 0.05, min = 0.001, max = 0.5, step = 0.01)
+        ),
+        
+        div(
+          style = "margin-top: 15px; margin-bottom: 15px;",
+          actionButton("btn_run_enrichment", "Run Enrichment Analysis", class = "btn-primary w-100", icon = icon("dna"))
+        ),
+        
+        # Individual Pathway GSEA Plot Selector
+        conditionalPanel(
+          condition = "input.enrich_method == 'gsea'",
+          hr(style = "margin: 15px 0;"),
+          tags$h4("4. Individual Pathway Inspection"),
+          uiOutput("gsea_pathway_selector"),
+          downloadButton("download_gsea_pathway_png", "Download Pathway Plot", class = "btn-sm btn-secondary w-100 mt-2")
+        )
+      ),
+      
+      mainPanel(
+        width = 8,
+        accordion(
+          open = c("Enrichment Dot Plot", "Enrichment Results Table", "Specific Pathway GSEA Plot"),
+          accordion_panel(
+            title = "Enrichment Dot Plot",
+            plotOutput("enrich_dotplot", height = "550px"),
+            div(
+              style = "margin-top: 10px;",
+              downloadButton("download_enrich_dotplot_png", "Download Dotplot (PNG)", class = "btn-sm btn-secondary")
+            )
+          ),
+          accordion_panel(
+            title = "Specific Pathway GSEA Plot",
+            conditionalPanel(
+              condition = "input.enrich_method == 'gsea'",
+              plotOutput("gsea_single_plot", height = "450px")
+            ),
+            conditionalPanel(
+              condition = "input.enrich_method != 'gsea'",
+              tags$em("Single pathway running-score plots are available in GSEA mode.")
+            )
+          ),
+          accordion_panel(
+            title = "Enrichment Results Table",
+            DTOutput("enrich_table")
+          )
+        )
+      )
+    )
+  ),
+  nav_panel(
+    "5. Export & Audit Trail",
     fluidRow(
       column(12,
              wellPanel(
