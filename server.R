@@ -30,6 +30,10 @@ server <- function(input, output, session) {
         parse_spectronaut(input$file_upload$datapath)
       } else if (input$data_source == "MSFragger") {
         parse_msfragger(input$file_upload$datapath)
+      } else if (input$data_source == "DIA-NN") {
+        parse_diann(input$file_upload$datapath)
+      } else if (input$data_source == "PEAKS") {
+        parse_peaks(input$file_upload$datapath)
       } else if (input$data_source == "Generic Table (Long or Wide)") {
         parse_generic(input$file_upload$datapath)
       } else if (input$data_source == "Re-import Exported RDS/State") {
