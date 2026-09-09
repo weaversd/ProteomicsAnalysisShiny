@@ -211,3 +211,195 @@ parse_generic <- function(path) {
   
   list(data = df_proc, geneDict = geneDict)
 }
+
+# Helper: Extract clean, concise sample names from full file paths
+clean_sample_names <- function(raw_cols) {
+  # 1. Extract base filename (handles both Windows \ and Unix / slashes)
+  basenames <- gsub(".*[\\\\/]", "", raw_cols)
+  
+  # 2. Strip standard mass-spectrometry raw data extensions
+  names_no_ext <- gsub("(?i)\\.(wiff|raw|mzml|d|dia|tsv|txt)$", "", basenames, perl = TRUE)
+  
+  if (length(names_no_ext) <= 1) return(names_no_ext)
+  
+  # 3. Detect longest common prefix
+  s_min <- min(names_no_ext)
+  s_max <- max(names_no_ext)
+  chars_min <- strsplit(s_min, "")[[1]]
+  chars_max <- strsplit(s_max, "")[[1]]
+  len <- min(length(chars_min), length(chars_max))
+  p_len <- 0
+  while (p_len < len && chars_min[p_len + 1] == chars_max[p_len + 1]) {
+    p_len <- p_len + 1
+  }
+  
+  # 4. Detect longest common suffix
+  rev_names <- vapply(names_no_ext, function(x) paste(rev(strsplit(x, "")[[1]]), collapse = ""), character(1))
+  r_min <- min(rev_names)
+  r_max <- max(rev_names)
+  r_chars_min <- strsplit(r_min, "")[[1]]
+  r_chars_max <- strsplit(r_max, "")[[1]]
+  r_len <- min(length(r_chars_min), length(r_chars_max))
+  s_len <- 0
+  while (s_len < r_len && r_chars_min[s_len + 1] == r_chars_max[s_len + 1]) {
+    s_len <- s_len + 1
+  }
+  
+  # 5. Extract the variable core tokens
+  cand <- vapply(names_no_ext, function(x) {
+    total_len <- nchar(x)
+    core_start <- p_len + 1
+    core_end <- total_len - s_len
+    if (core_start <= core_end) {
+      substr(x, core_start, core_end)
+    } else {
+      x
+    }
+  }, character(1), USE.NAMES = FALSE)
+  
+  # Strip leftover leading/trailing delimiter artifacts
+  cand_clean <- gsub("^[_.-]+|[_.-]+$", "", cand)
+  
+  # Ensure the simplified tokens are non-empty and unique
+  if (all(nchar(cand_clean) > 0) && length(unique(cand_clean)) == length(names_no_ext)) {
+    return(cand_clean)
+  }
+  
+  return(names_no_ext)
+}
+
+# Parser for DIA-NN Matrix Output (report.pg_matrix.tsv)
+parse_diann <- function(path) {
+  df <- read.delim(path, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE)
+  
+  # 1. Identify Protein Group / Accession column
+  acc_col <- intersect(c("Protein.Group", "Protein.Ids", "Protein.Names", "Protein.ID", "Accession"), names(df))[1]
+  if (is.na(acc_col)) {
+    stop("Could not find a valid Protein Group / Accession column in the DIA-NN matrix file.")
+  }
+  
+  # 2. Extract Gene and Description dictionaries
+  gene_col <- intersect(c("Genes", "Gene", "Gene.Names", "Gene Name"), names(df))[1]
+  desc_col <- intersect(c("First.Protein.Description", "Protein.Description", "Description"), names(df))[1]
+  
+  geneDict <- df %>% 
+    mutate(
+      Accession   = as.character(.data[[acc_col]]),
+      gene        = if (!is.na(gene_col) && gene_col %in% names(df)) as.character(.data[[gene_col]]) else as.character(.data[[acc_col]]),
+      description = if (!is.na(desc_col) && desc_col %in% names(df)) as.character(.data[[desc_col]]) else as.character(.data[[acc_col]])
+    ) %>% 
+    select(Accession, gene, description) %>% 
+    mutate(
+      gene = ifelse(is.na(gene) | gene == "", Accession, gene),
+      description = ifelse(is.na(description) | description == "", Accession, description)
+    ) %>%
+    distinct(Accession, .keep_all = TRUE)
+  
+  # 3. Identify Quantitative Columns (exclude known DIA-NN metadata columns)
+  meta_cols <- c(
+    "Protein.Group", "Protein.Ids", "Protein.Names", "Genes", "Gene.Names",
+    "First.Protein.Description", "Protein.Description", "Description",
+    "N.Sequences", "N.Proteotypic.Sequences", "Global.Q.Value", "Global.PG.Q.Value",
+    "PG.Q.Value", "Q.Value", "Precursor.Id", "Modified.Sequence", "Stripped.Sequence"
+  )
+  raw_sample_cols <- setdiff(names(df), meta_cols)
+  
+  if (length(raw_sample_cols) == 0) {
+    stop("No quantitative sample columns found in DIA-NN matrix file.")
+  }
+  
+  # 4. Generate clean sample IDs and map
+  clean_ids <- clean_sample_names(raw_sample_cols)
+  col_map   <- setNames(clean_ids, raw_sample_cols)
+  
+  # 5. Pivot long, convert linear intensity to Log2, and infer conditions
+  df_proc <- df %>%
+    mutate(Protein.ID = as.character(.data[[acc_col]])) %>%
+    select(Protein.ID, all_of(raw_sample_cols)) %>%
+    pivot_longer(cols = -Protein.ID, names_to = "Raw_Col", values_to = "Intensity") %>%
+    mutate(
+      Intensity = suppressWarnings(as.numeric(Intensity)),
+      Intensity = ifelse(Intensity <= 0 | is.na(Intensity), NA_real_, Intensity),
+      ID        = unname(col_map[Raw_Col]),
+      condition = str_remove_all(str_extract(ID, "x[0-9]+|[A-Za-z]+"), "x"),
+      BR        = str_extract(ID, "\\d+$"),
+      condition = ifelse(is.na(condition) | condition == "", "Sample", condition),
+      BR        = ifelse(is.na(BR) | BR == "", "1", BR),
+      LogInt    = log2(Intensity)
+    ) %>%
+    select(Protein.ID, ID, Intensity, condition, BR, LogInt)
+  
+  list(data = df_proc, geneDict = geneDict)
+}
+
+# R/parsers.R (PEAKS Parser)
+
+parse_peaks <- function(path) {
+  # PEAKS outputs are typically comma-separated CSV files
+  df <- read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
+  
+  # 1. Identify Accession column
+  acc_col <- intersect(c("Accession", "Protein Accession", "Protein.Accession", "Protein"), names(df))[1]
+  if (is.na(acc_col)) {
+    stop("Could not find a valid Accession column in the PEAKS file.")
+  }
+  
+  # 2. Extract Gene from GN= in Description, and Clean Accession (strip |...)
+  desc_col <- intersect(c("Description", "Protein Description", "Protein.Description"), names(df))[1]
+  
+  # Clean accession: discard |gene_ID part
+  clean_accessions <- gsub("\\|.*$", "", as.character(df[[acc_col]]))
+  
+  # Extract gene symbol from GN= in description
+  if (!is.na(desc_col) && desc_col %in% names(df)) {
+    descriptions <- as.character(df[[desc_col]])
+    extracted_genes <- stringr::str_match(descriptions, "\\bGN=([^\\s]+)")[, 2]
+    # Fallback to cleaned accession if GN= is missing or empty
+    gene_symbols <- ifelse(is.na(extracted_genes) | extracted_genes == "", clean_accessions, extracted_genes)
+  } else {
+    descriptions <- clean_accessions
+    gene_symbols <- clean_accessions
+  }
+  
+  geneDict <- data.frame(
+    Accession   = clean_accessions,
+    gene        = gene_symbols,
+    description = descriptions,
+    stringsAsFactors = FALSE
+  ) %>%
+    distinct(Accession, .keep_all = TRUE)
+  
+  # 3. Locate Quantitative Area Columns
+  # Handles DB search ('Area Sample 1') and LFQ ('Sample 1 Area')
+  # Excludes 'Group X Area' summary columns
+  all_area_cols <- names(df)[grepl("(?i)\\barea\\b", names(df), perl = TRUE)]
+  area_cols <- all_area_cols[!grepl("(?i)\\bgroup\\b|\\bprofile\\b|\\bratio\\b", all_area_cols, perl = TRUE)]
+  
+  if (length(area_cols) == 0) {
+    stop("No quantitative sample Area columns found in PEAKS file.")
+  }
+  
+  # 4. Standardize Sample Names (e.g., 'Area Sample 1' or 'Sample 1 Area' -> 'Sample 1')
+  sample_clean_ids <- gsub("(?i)\\barea\\b", "", area_cols, perl = TRUE)
+  sample_clean_ids <- trimws(gsub("\\s+", " ", sample_clean_ids))
+  col_map <- setNames(sample_clean_ids, area_cols)
+  
+  # 5. Process into Long Format and Log2 Transform
+  df_proc <- df %>%
+    mutate(Protein.ID = clean_accessions) %>%
+    select(Protein.ID, all_of(area_cols)) %>%
+    pivot_longer(cols = -Protein.ID, names_to = "Raw_Col", values_to = "Area") %>%
+    mutate(
+      Intensity = suppressWarnings(as.numeric(Area)),
+      Intensity = ifelse(Intensity <= 0 | is.na(Intensity), NA_real_, Intensity),
+      ID        = unname(col_map[Raw_Col]),
+      condition = str_remove_all(str_extract(ID, "x[0-9]+|[A-Za-z]+"), "x"),
+      BR        = str_extract(ID, "\\d+$"),
+      condition = ifelse(is.na(condition) | condition == "", "Sample", condition),
+      BR        = ifelse(is.na(BR) | BR == "", "1", BR),
+      LogInt    = log2(Intensity)
+    ) %>%
+    select(Protein.ID, ID, Intensity, condition, BR, LogInt)
+  
+  list(data = df_proc, geneDict = geneDict)
+}

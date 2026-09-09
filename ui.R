@@ -9,7 +9,8 @@ ui <- page_navbar(
       sidebarPanel(
         # ui.R (Snippet inside Nav Panel 1)
         selectInput("data_source", "Select Source Format:", 
-                    choices = c("Spectronaut", "MSFragger", "Generic Table (Long or Wide)", "Re-import Exported RDS/State")),
+                    choices = c("Spectronaut", "MSFragger", "DIA-NN",
+                                "PEAKS", "Generic Table (Long or Wide)", "Re-import Exported RDS/State")),
         fileInput("file_upload", "Upload Protein File", accept = c(".tsv", ".csv", ".rds", ".txt")),
         hr(),
         h5("Sample Metadata Mapping"),
