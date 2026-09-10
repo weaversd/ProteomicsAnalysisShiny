@@ -11,7 +11,7 @@ cran_packages <- c(
 )
 
 bioc_packages <- c(
-  "QFeatures", "limma", "MsCoreUtils", "vsn", 
+  "AnnotationDbi", "GO.db", "QFeatures", "limma", "MsCoreUtils", "vsn", 
   "clusterProfiler", "enrichplot", "org.Mm.eg.db", "org.Hs.eg.db"
 )
 
