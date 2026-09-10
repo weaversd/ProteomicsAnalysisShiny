@@ -3,7 +3,8 @@
 cran_packages <- c(
   "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
   "stringr", "ggplot2", "ggrepel", "plotly", "DT", 
-  "openxlsx", "jsonlite", "colourpicker", "glue", "testthat", "readxl"
+  "openxlsx", "jsonlite", "colourpicker", "glue", "testthat",
+  "readxl", "RSQLite"
 )
 
 # Define Bioconductor packages
