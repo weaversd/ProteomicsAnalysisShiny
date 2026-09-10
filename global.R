@@ -1,5 +1,6 @@
-# global.R
-# Define CRAN packages
+# ------------------------------------------------------------------------------
+# 1. Define Packages
+# ------------------------------------------------------------------------------
 cran_packages <- c(
   "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
   "stringr", "ggplot2", "ggrepel", "plotly", "DT", 
@@ -7,47 +8,45 @@ cran_packages <- c(
   "readxl", "RSQLite"
 )
 
-# Define Bioconductor packages
 bioc_packages <- c(
-  "QFeatures", "limma", "MsCoreUtils", "vsn", "clusterProfiler", "enrichplot"
+  "QFeatures", "limma", "MsCoreUtils", "vsn", 
+  "clusterProfiler", "enrichplot", "org.Mm.eg.db", "org.Hs.eg.db"
 )
 
-# 1. Ensure BiocManager is installed (handles Bioconductor releases & dependencies)
+# ------------------------------------------------------------------------------
+# 2. Package Installation Logic (Forcing Binaries on Windows)
+# ------------------------------------------------------------------------------
+pkg_type <- if (.Platform$OS.type == "windows") "binary" else "source"
+
+# 1. Ensure BiocManager is installed
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
-  install.packages("BiocManager", repos = "https://cloud.r-project.org")
+  install.packages("BiocManager", repos = "https://cloud.r-project.org", type = pkg_type)
 }
 
-# 2. Get vector of currently installed packages once (faster than repeated checks)
+# 2. Check installed packages
 installed_pkgs <- installed.packages()[, "Package"]
 
-# 3. Install missing CRAN packages
+# 3. Install missing CRAN packages using pre-compiled binaries
 missing_cran <- setdiff(cran_packages, installed_pkgs)
 if (length(missing_cran) > 0) {
   message("Installing missing CRAN packages: ", paste(missing_cran, collapse = ", "))
-  install.packages(missing_cran, repos = "https://cloud.r-project.org")
+  install.packages(missing_cran, repos = "https://cloud.r-project.org", type = pkg_type)
 }
 
-# 4. Install missing Bioconductor packages
+# 4. Install missing Bioconductor packages using pre-compiled binaries
 missing_bioc <- setdiff(bioc_packages, installed_pkgs)
 if (length(missing_bioc) > 0) {
   message("Installing missing Bioconductor packages: ", paste(missing_bioc, collapse = ", "))
-  BiocManager::install(missing_bioc, ask = FALSE, update = FALSE)
+  BiocManager::install(missing_bioc, ask = FALSE, update = FALSE, type = pkg_type)
 }
 
-
-suppressPackageStartupMessages({
-  library(clusterProfiler)
-  library(enrichplot)
-  library(readxl)
-  # Pre-load or ensure annotation packages are available
-  if (requireNamespace("org.Mm.eg.db", quietly = TRUE)) library(org.Mm.eg.db)
-  if (requireNamespace("org.Hs.eg.db", quietly = TRUE)) library(org.Hs.eg.db)
-})
-
-
-# 5. Load all packages
+# ------------------------------------------------------------------------------
+# 3. Load All Packages
+# ------------------------------------------------------------------------------
 all_packages <- c(cran_packages, bioc_packages)
-invisible(lapply(all_packages, library, character.only = TRUE))
+suppressPackageStartupMessages({
+  invisible(lapply(all_packages, library, character.only = TRUE))
+})
 
 # Color Palette from baseline scripts
 my_palette <- c(
