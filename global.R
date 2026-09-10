@@ -1,10 +1,12 @@
+# global.R
+
 # ------------------------------------------------------------------------------
 # 1. Define Packages
 # ------------------------------------------------------------------------------
 cran_packages <- c(
-  "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
+  "rlang", "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
   "stringr", "ggplot2", "ggrepel", "plotly", "DT", 
-  "openxlsx", "jsonlite", "colourpicker", "glue", "testthat",
+  "openxlsx", "jsonlite", "colourpicker", "glue",
   "readxl", "RSQLite"
 )
 
@@ -14,7 +16,7 @@ bioc_packages <- c(
 )
 
 # ------------------------------------------------------------------------------
-# 2. Package Installation Logic (Forcing Binaries on Windows)
+# 2. Package Installation Logic
 # ------------------------------------------------------------------------------
 pkg_type <- if (.Platform$OS.type == "windows") "binary" else "source"
 
@@ -26,22 +28,22 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
 # 2. Check installed packages
 installed_pkgs <- installed.packages()[, "Package"]
 
-# 3. Install missing CRAN packages using pre-compiled binaries
+# 3. Install missing CRAN packages (force Windows binaries for compiled C/C++ like RSQLite)
 missing_cran <- setdiff(cran_packages, installed_pkgs)
 if (length(missing_cran) > 0) {
   message("Installing missing CRAN packages: ", paste(missing_cran, collapse = ", "))
   install.packages(missing_cran, repos = "https://cloud.r-project.org", type = pkg_type)
 }
 
-# 4. Install missing Bioconductor packages using pre-compiled binaries
+# 4. Install missing Bioconductor packages (let BiocManager auto-negotiate binary vs source)
 missing_bioc <- setdiff(bioc_packages, installed_pkgs)
 if (length(missing_bioc) > 0) {
   message("Installing missing Bioconductor packages: ", paste(missing_bioc, collapse = ", "))
-  BiocManager::install(missing_bioc, ask = FALSE, update = FALSE, type = pkg_type)
+  BiocManager::install(missing_bioc, ask = FALSE, update = FALSE)
 }
 
 # ------------------------------------------------------------------------------
-# 3. Load All Packages
+# 3. Load Application Packages
 # ------------------------------------------------------------------------------
 all_packages <- c(cran_packages, bioc_packages)
 suppressPackageStartupMessages({
