@@ -10,9 +10,14 @@ cran_packages <- c(
   "readxl", "RSQLite"
 )
 
-bioc_packages <- c(
-  "AnnotationDbi", "GO.db", "QFeatures", "limma", "MsCoreUtils", "vsn", 
-  "clusterProfiler", "enrichplot", "org.Mm.eg.db", "org.Hs.eg.db"
+# Foundation packages that must exist before organism DBs or DOSE are compiled
+bioc_foundation <- c("AnnotationDbi", "GO.db")
+
+# Downstream analysis and annotation packages
+bioc_downstream <- c(
+  "DOSE", "enrichplot", "clusterProfiler", 
+  "QFeatures", "limma", "MsCoreUtils", "vsn", 
+  "org.Mm.eg.db", "org.Hs.eg.db"
 )
 
 # ------------------------------------------------------------------------------
@@ -35,11 +40,16 @@ if (length(missing_cran) > 0) {
   install.packages(missing_cran, repos = "https://cloud.r-project.org", type = pkg_type)
 }
 
-# 4. Install missing Bioconductor packages (let BiocManager auto-negotiate binary vs source)
-missing_bioc <- setdiff(bioc_packages, installed_pkgs)
-if (length(missing_bioc) > 0) {
-  message("Installing missing Bioconductor packages: ", paste(missing_bioc, collapse = ", "))
-  BiocManager::install(missing_bioc, ask = FALSE, update = FALSE)
+# Install foundation first
+missing_foundation <- setdiff(bioc_foundation, installed.packages()[, "Package"])
+if (length(missing_foundation) > 0) {
+  BiocManager::install(missing_foundation, ask = FALSE, update = FALSE)
+}
+
+# Install remaining packages
+missing_downstream <- setdiff(bioc_downstream, installed.packages()[, "Package"])
+if (length(missing_downstream) > 0) {
+  BiocManager::install(missing_downstream, ask = FALSE, update = FALSE)
 }
 
 # ------------------------------------------------------------------------------
