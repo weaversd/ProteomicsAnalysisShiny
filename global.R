@@ -7,7 +7,7 @@ cran_packages <- c(
   "rlang", "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
   "stringr", "ggplot2", "ggrepel", "plotly", "DT", 
   "openxlsx", "jsonlite", "colourpicker", "glue",
-  "readxl", "RSQLite"
+  "readxl", "RSQLite", "shadowtext"
 )
 
 # Foundation packages that must exist before organism DBs or DOSE are compiled
@@ -19,6 +19,8 @@ bioc_downstream <- c(
   "QFeatures", "limma", "MsCoreUtils", "vsn", 
   "org.Mm.eg.db", "org.Hs.eg.db"
 )
+
+bioc_packages <- c(bioc_foundation, bioc_downstream)
 
 # ------------------------------------------------------------------------------
 # 2. Package Installation Logic
