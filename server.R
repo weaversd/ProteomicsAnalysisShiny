@@ -92,26 +92,59 @@ server <- function(input, output, session) {
   output$sample_mapping_ui <- renderUI({
     req(rv$raw_data)
     unique_ids <- unique(rv$raw_data$ID)
+    show_tr <- isTRUE(input$has_tech_reps)
     
     mapping_rows <- lapply(unique_ids, function(id) {
-      default_cond <- str_remove_all(str_extract(id, "x[0-9]|[A-Za-z]+"), "x")
-      default_br   <- str_extract(id, "\\d+$")
-      if (is.na(default_cond) || default_cond == "") default_cond <- "Cond"
-      if (is.na(default_br)   || default_br == "")   default_br <- "1"
+      # 1. Guess Technical Replicate (e.g., _TR1, _inj2, or trailing number after delimiter)
+      tr_match <- str_extract(id, "(?i)(?<=[-_](tr|inj|tech))\\d+")
+      if (is.na(tr_match)) {
+        # Check if double-numbered pattern like Cond1_BR1_1
+        tr_match <- str_extract(id, "(?<=[_-])\\d+$")
+      }
+      default_tr <- if (!is.na(tr_match)) tr_match else "1"
       
-      fluidRow(
-        column(4, tags$strong(id, style = "font-size: 11px; vertical-align: -20px;")),
-        column(4, textInput(paste0("cond_", id), label = NULL, value = default_cond, placeholder = "Condition")),
-        column(4, textInput(paste0("br_", id),   label = NULL, value = default_br,   placeholder = "Replicate"))
-      )
+      # 2. Clean ID string to infer Condition and BioRep
+      id_clean <- str_remove(id, "(?i)[-_](tr|inj|tech)?\\d+$")
+      
+      default_cond <- str_remove_all(str_extract(id_clean, "x[0-9]|[A-Za-z]+"), "x")
+      default_br   <- str_extract(id_clean, "\\d+$")
+      
+      if (is.na(default_cond) || default_cond == "") default_cond <- "Cond"
+      if (is.na(default_br)   || default_br == "")   default_br   <- "1"
+      
+      if (show_tr) {
+        fluidRow(
+          column(3, tags$strong(id, style = "font-size: 11px; word-break: break-all;")),
+          column(3, textInput(paste0("cond_", id), label = NULL, value = default_cond, placeholder = "Cond")),
+          column(3, textInput(paste0("br_", id),   label = NULL, value = default_br,   placeholder = "BioRep")),
+          column(3, textInput(paste0("tr_", id),   label = NULL, value = default_tr,   placeholder = "TechRep"))
+        )
+      } else {
+        fluidRow(
+          column(4, tags$strong(id, style = "font-size: 11px; word-break: break-all;")),
+          column(4, textInput(paste0("cond_", id), label = NULL, value = default_cond, placeholder = "Condition")),
+          column(4, textInput(paste0("br_", id),   label = NULL, value = default_br,   placeholder = "Replicate"))
+        )
+      }
     })
     
-    tagList(
+    header_row <- if (show_tr) {
       fluidRow(
-        column(4, tags$b("Detected ID")),
+        column(3, tags$b("Detected Run ID")),
+        column(3, tags$b("Condition")),
+        column(3, tags$b("Bio Rep")),
+        column(3, tags$b("Tech Rep"))
+      )
+    } else {
+      fluidRow(
+        column(4, tags$b("Detected Run ID")),
         column(4, tags$b("Condition")),
         column(4, tags$b("Replicate"))
-      ),
+      )
+    }
+    
+    tagList(
+      header_row,
       hr(style = "margin-top: 5px; margin-bottom: 10px;"),
       mapping_rows
     )
@@ -121,34 +154,78 @@ server <- function(input, output, session) {
   observeEvent(input$btn_process_import, {
     req(rv$raw_data)
     unique_ids <- unique(rv$raw_data$ID)
+    show_tr    <- isTRUE(input$has_tech_reps)
     
     mapping_df <- do.call(rbind, lapply(unique_ids, function(id) {
       cond_val <- input[[paste0("cond_", id)]]
       br_val   <- input[[paste0("br_", id)]]
+      tr_val   <- if (show_tr) input[[paste0("tr_", id)]] else "1"
+      
       if (is.null(cond_val) || cond_val == "") cond_val <- "Unspecified"
       if (is.null(br_val)   || br_val == "")   br_val   <- "1"
+      if (is.null(tr_val)   || tr_val == "")   tr_val   <- "1"
+      
       data.frame(
-        ID = id,
+        ID             = id,
         user_condition = cond_val,
-        user_BR = br_val,
-        new_ID = paste0(cond_val, br_val),
+        user_BR        = br_val,
+        user_TR        = tr_val,
+        # Unique biological sample ID
+        bio_sample_ID  = paste0(cond_val, br_val),
         stringsAsFactors = FALSE
       )
     }))
     
-    rv$raw_data <- rv$raw_data %>%
-      select(-any_of(c("condition", "BR"))) %>%
-      left_join(mapping_df, by = "ID") %>%
-      mutate(
-        condition = user_condition,
-        BR = user_BR,
-        ID = new_ID
-      ) %>%
-      select(Protein.ID, ID, Intensity, condition, BR, LogInt)
+    # Merge mappings with raw dataset
+    joined_data <- rv$raw_data %>%
+      select(-any_of(c("condition", "BR", "TR"))) %>%
+      left_join(mapping_df, by = "ID")
     
-    rv$sample_map <- mapping_df
-    rv$audit_log$sample_mapping <- mapping_df
+    if (show_tr) {
+      # Log transformation -> Average across technical replicates per biological unit
+      processed_data <- joined_data %>%
+        group_by(Protein.ID, user_condition, user_BR, bio_sample_ID) %>%
+        summarise(
+          # Average log2 intensities; if all TRs are NA, returns NaN -> cast to NA
+          LogInt = {
+            valid_vals <- LogInt[!is.na(LogInt) & is.finite(LogInt)]
+            if (length(valid_vals) > 0) mean(valid_vals) else NA_real_
+          },
+          .groups = "drop"
+        ) %>%
+        mutate(
+          Intensity = ifelse(is.na(LogInt), NA_real_, 2^LogInt),
+          condition = user_condition,
+          BR        = user_BR,
+          ID        = bio_sample_ID
+        ) %>%
+        select(Protein.ID, ID, Intensity, condition, BR, LogInt)
+      
+      # Audit trail metadata
+      rv$audit_log$technical_replicate_averaging <- list(
+        enabled = TRUE,
+        total_runs_ingested = length(unique_ids),
+        consolidated_samples = length(unique(processed_data$ID))
+      )
+    } else {
+      # Standard 1:1 run-to-sample mapping
+      processed_data <- joined_data %>%
+        mutate(
+          condition = user_condition,
+          BR        = user_BR,
+          ID        = bio_sample_ID
+        ) %>%
+        select(Protein.ID, ID, Intensity, condition, BR, LogInt)
+      
+      rv$audit_log$technical_replicate_averaging <- list(enabled = FALSE)
+    }
     
+    rv$raw_data   <- processed_data
+    rv$sample_map <- mapping_df %>%
+      rename(new_ID = bio_sample_ID)
+    rv$audit_log$sample_mapping <- rv$sample_map
+    
+    # Rebuild QFeatures container using consolidated biological sample columns
     wide_data_mapped <- rv$raw_data %>%
       select(Protein.ID, ID, LogInt) %>%
       pivot_wider(names_from = ID, values_from = LogInt)
@@ -160,7 +237,15 @@ server <- function(input, output, session) {
       name = "raw"
     )
     
-    showNotification("Sample metadata successfully mapped!", type = "message")
+    if (show_tr) {
+      showNotification(
+        paste0("Technical replicates averaged. Consolidated into ", length(unique(rv$raw_data$ID)), " biological samples."),
+        type = "message",
+        duration = 5
+      )
+    } else {
+      showNotification("Sample metadata successfully mapped!", type = "message")
+    }
   })
   
   output$import_preview_table <- renderDT({

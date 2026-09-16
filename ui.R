@@ -7,15 +7,15 @@ ui <- page_navbar(
     "1. Data Import & Setup",
     sidebarLayout(
       sidebarPanel(
-        # ui.R (Snippet inside Nav Panel 1)
         selectInput("data_source", "Select Source Format:", 
                     choices = c("Spectronaut", "MSFragger", "DIA-NN",
                                 "PEAKS", "Generic Table (Long or Wide)", "Re-import Exported RDS/State")),
         fileInput("file_upload", "Upload Protein File", accept = c(".tsv", ".csv", ".rds", ".txt")),
         hr(),
         h5("Sample Metadata Mapping"),
-        helpText("Assign the Condition and Replicate number for each sample column:"),
-        uiOutput("sample_mapping_ui"), # Dynamic mapping interface
+        checkboxInput("has_tech_reps", "Dataset contains Technical Replicates (Injections)", value = FALSE),
+        helpText("Assign Condition, Biological Replicate, and (optional) Technical Replicate for each run:"),
+        uiOutput("sample_mapping_ui"),
         hr(),
         actionButton("btn_process_import", "Process & Map Samples", class = "btn-primary w-100")
       ),
