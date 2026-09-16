@@ -1,4 +1,10 @@
-.Rproj.user
-.Rhistory
+# Ignore the local, isolated R package library
+app_lib/
+
+# Ignore temporary R files and session artifacts
 .RData
-.Ruserdata
+.Rhistory
+.Rproj.user/
+*.Rout
+00LOCK*
+

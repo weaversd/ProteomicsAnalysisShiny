@@ -54,8 +54,18 @@ exit /b 1
 
 :RUN
 echo Found Rscript at: "%RSCRIPT_PATH%"
+
+:: -------------------------------------------------------------
+:: Set dedicated app library to avoid locked DLL / conflict issues
+:: -------------------------------------------------------------
+set "APP_LIB=%~dp0app_lib"
+if not exist "%APP_LIB%" mkdir "%APP_LIB%"
+set "R_LIBS_USER=%APP_LIB%"
+
+echo Using isolated library: "%APP_LIB%"
+
 echo Launching Shiny App...
 
-"%RSCRIPT_PATH%" launch.R
+"%RSCRIPT_PATH%" --vanilla launch.R
 
 pause
