@@ -1,52 +1,66 @@
 # global.R
-# Define CRAN packages
+
+# ------------------------------------------------------------------------------
+# 1. Define Packages
+# ------------------------------------------------------------------------------
 cran_packages <- c(
-  "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
+  "rlang", "shiny", "bslib", "dtplyr", "dplyr", "tidyr", 
   "stringr", "ggplot2", "ggrepel", "plotly", "DT", 
-  "openxlsx", "jsonlite", "colourpicker", "glue", "testthat", "readxl"
+  "openxlsx", "jsonlite", "colourpicker", "glue",
+  "readxl", "RSQLite", "shadowtext"
 )
 
-# Define Bioconductor packages
-bioc_packages <- c(
-  "QFeatures", "limma", "MsCoreUtils", "vsn", "clusterProfiler", "enrichplot"
+# Foundation packages that must exist before organism DBs or DOSE are compiled
+bioc_foundation <- c("AnnotationDbi", "GO.db")
+
+# Downstream analysis and annotation packages
+bioc_downstream <- c(
+  "DOSE", "enrichplot", "clusterProfiler", 
+  "QFeatures", "limma", "MsCoreUtils", "vsn", 
+  "org.Mm.eg.db", "org.Hs.eg.db"
 )
 
-# 1. Ensure BiocManager is installed (handles Bioconductor releases & dependencies)
+bioc_packages <- c(bioc_foundation, bioc_downstream)
+
+# ------------------------------------------------------------------------------
+# 2. Package Installation Logic
+# ------------------------------------------------------------------------------
+pkg_type <- if (.Platform$OS.type == "windows") "binary" else "source"
+
+# 1. Ensure BiocManager is installed
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
-  install.packages("BiocManager", repos = "https://cloud.r-project.org")
+  install.packages("BiocManager", repos = "https://cloud.r-project.org", type = pkg_type)
 }
 
-# 2. Get vector of currently installed packages once (faster than repeated checks)
+# 2. Check installed packages
 installed_pkgs <- installed.packages()[, "Package"]
 
-# 3. Install missing CRAN packages
+# 3. Install missing CRAN packages (force Windows binaries for compiled C/C++ like RSQLite)
 missing_cran <- setdiff(cran_packages, installed_pkgs)
 if (length(missing_cran) > 0) {
   message("Installing missing CRAN packages: ", paste(missing_cran, collapse = ", "))
-  install.packages(missing_cran, repos = "https://cloud.r-project.org")
+  install.packages(missing_cran, repos = "https://cloud.r-project.org", type = pkg_type)
 }
 
-# 4. Install missing Bioconductor packages
-missing_bioc <- setdiff(bioc_packages, installed_pkgs)
-if (length(missing_bioc) > 0) {
-  message("Installing missing Bioconductor packages: ", paste(missing_bioc, collapse = ", "))
-  BiocManager::install(missing_bioc, ask = FALSE, update = FALSE)
+# Install foundation first
+missing_foundation <- setdiff(bioc_foundation, installed.packages()[, "Package"])
+if (length(missing_foundation) > 0) {
+  BiocManager::install(missing_foundation, ask = FALSE, update = FALSE)
 }
 
+# Install remaining packages
+missing_downstream <- setdiff(bioc_downstream, installed.packages()[, "Package"])
+if (length(missing_downstream) > 0) {
+  BiocManager::install(missing_downstream, ask = FALSE, update = FALSE)
+}
 
-suppressPackageStartupMessages({
-  library(clusterProfiler)
-  library(enrichplot)
-  library(readxl)
-  # Pre-load or ensure annotation packages are available
-  if (requireNamespace("org.Mm.eg.db", quietly = TRUE)) library(org.Mm.eg.db)
-  if (requireNamespace("org.Hs.eg.db", quietly = TRUE)) library(org.Hs.eg.db)
-})
-
-
-# 5. Load all packages
+# ------------------------------------------------------------------------------
+# 3. Load Application Packages
+# ------------------------------------------------------------------------------
 all_packages <- c(cran_packages, bioc_packages)
-invisible(lapply(all_packages, library, character.only = TRUE))
+suppressPackageStartupMessages({
+  invisible(lapply(all_packages, library, character.only = TRUE))
+})
 
 # Color Palette from baseline scripts
 my_palette <- c(
