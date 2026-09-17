@@ -15,6 +15,11 @@ An interactive R Shiny application for end-to-end differential expression analys
 - **Reproducible Exports & State Tracking:** Multi-tab Excel workbooks (.xlsx) with condition-specific headers, publication-grade PNG/PDF figure exports, standalone reproducible R analysis scripts, JSON audit trails capturing Git tags and R environment parameters, and RDS full-state saving/restoring.
 
 ---
+## User Manual:
+- Available as USER_MANUAL.pdf
+---
+
+---
 ## Installation & Setup
 
 ### Prerequisites

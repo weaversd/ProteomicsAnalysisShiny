@@ -8,3 +8,5 @@ app_lib/
 *.Rout
 00LOCK*
 
+#manual generation
+generate_manual.R
