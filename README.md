@@ -16,8 +16,10 @@ An interactive R Shiny application for end-to-end differential expression analys
 
 ---
 ## User Manual:
-- Available as USER_MANUAL.pdf
----
+Comprehensive documentation covering data ingestion formats, normalization methods, statistical modeling, custom highlighting, and functional enrichment:
+
+* **[View User Manual (Markdown)](USER_MANUAL.md)**
+* **[Download User Manual (PDF)](USER_MANUAL.pdf)**
 
 ---
 ## Installation & Setup
